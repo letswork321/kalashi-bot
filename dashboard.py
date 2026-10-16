@@ -40,7 +40,7 @@ def snapshot():
     if not DB.is_file():
         return {'now':now,'state':'WAITING','reason':'Scanner has not created its database yet','latest':None,'recent':[],'paper':[],'stats':None}
     # No DB initialization or writes in HTTP workers; scanner owns the schema.
-    db = sqlite3.connect('file:'+str(DB)+'?mode=ro', uri=True,timeout=5)
+    db = sqlite3.connect(DB.resolve().as_uri()+'?mode=ro', uri=True,timeout=5)
     db.row_factory=sqlite3.Row
     try:
         latest = db.execute('SELECT * FROM predictions ORDER BY id DESC LIMIT 1').fetchone()

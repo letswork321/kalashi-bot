@@ -58,4 +58,15 @@ class DashboardTests(unittest.TestCase):
         st.record(p,s.Config());st.db.close()
         self.assertEqual(self.client.get('/api/state',headers=self.auth).json['state'],'MOCK TEST ONLY')
 
+    def test_database_filename_with_spaces_and_uri_characters(self):
+        path=Path(self.temp.name)/'BTC history #1.sqlite3'
+        st=s.Store(path)
+        now=time.time()
+        p=s.analyze(*s.mock_inputs(now),now,s.Config(),1)
+        st.record(p,s.Config());st.db.close()
+        with patch.object(dashboard,'DB',path):
+            result=self.client.get('/api/state',headers=self.auth)
+        self.assertEqual(result.status_code,200)
+        self.assertEqual(len(result.json['recent']),1)
+
 if __name__=='__main__': unittest.main()

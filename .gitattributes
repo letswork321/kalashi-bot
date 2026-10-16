@@ -1,0 +1,2 @@
+# Keep batch files as CRLF in source ZIPs and allow their line endings in checks.
+*.cmd -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

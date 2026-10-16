@@ -6,7 +6,7 @@ This bot reads public Kalshi and Coinbase data, estimates UP/DOWN probabilities,
 
 ## Private Windows use (no public deployment)
 
-Follow [WINDOWS-START.md](WINDOWS-START.md). Double-click `start-windows.cmd` after extracting the Windows ZIP. This uses hidden credential prompts and a loopback-only Waitress server. Stop the cloud worker first to avoid duplicate alerts.
+Follow [WINDOWS-START.md](WINDOWS-START.md). Double-click `start-windows.cmd` after extracting the Windows ZIP. It automatically detects the official NuGet Python at `%USERPROFILE%\Downloads\python.3.12.10\tools\python.exe` and uses hidden credential prompts and a loopback-only Waitress server. No `py` launcher, standard installer, PATH change, or security-setting change is needed. Stop the cloud worker first to avoid duplicate alerts.
 
 ## 1. Network settings
 
