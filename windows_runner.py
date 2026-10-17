@@ -21,8 +21,9 @@ def main():
     finally:s.close()
     # Network quality issues remain visible as NO TRADE; never switch to fixtures.
     scanner=subprocess.Popen([sys.executable,'scanner.py'],cwd=ROOT)
-    web=subprocess.Popen([sys.executable,'-m','waitress','--listen=127.0.0.1:8000','dashboard:app'],cwd=ROOT)
+    web=None
     try:
+        web=subprocess.Popen([sys.executable,'-m','waitress','--listen=127.0.0.1:8000','dashboard:app'],cwd=ROOT)
         for _ in range(40):
             if scanner.poll() is not None or web.poll() is not None:
                 print('A service could not start; read the error above.');return 1
@@ -38,12 +39,14 @@ def main():
         webbrowser.open('http://127.0.0.1:8000/')
         while scanner.poll() is None and web.poll() is None:time.sleep(1)
         print('A service stopped; shutting down its companion.');return 1
+    except OSError as exc:
+        print('A local service could not start: '+str(exc));return 1
     except KeyboardInterrupt:
         print('\nStopping private dashboard and alerts.');return 0
     finally:
-        for p in (scanner,web):
+        for p in (p for p in (scanner,web) if p is not None):
             if p.poll() is None:p.terminate()
-        for p in (scanner,web):
+        for p in (p for p in (scanner,web) if p is not None):
             try:p.wait(timeout=10)
             except subprocess.TimeoutExpired:p.kill();p.wait()
 

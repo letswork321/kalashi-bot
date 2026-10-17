@@ -23,7 +23,7 @@ def authenticate():
     if not password:
         return Response('Set DASHBOARD_PASSWORD before starting the dashboard.',status=503)
     auth = request.authorization
-    if not auth or not hmac.compare_digest(auth.username or '', 'viewer') or not hmac.compare_digest((auth.password or '').encode(), password.encode()):
+    if not auth or not hmac.compare_digest((auth.username or '').encode(), b'viewer') or not hmac.compare_digest((auth.password or '').encode(), password.encode()):
         return Response('Authentication required',401,{'WWW-Authenticate':'Basic realm="Kalshi monitor", charset="UTF-8"'})
 
 @app.after_request
@@ -67,6 +67,12 @@ def snapshot():
             if payload.get('btc_price') is not None:
                 prices.append({'time':row['observed'],'price':payload['btc_price']})
         p=json.loads(latest['payload']) if latest else None
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='intel_snapshots'").fetchone():
+            current=db.execute('SELECT ts,payload FROM intel_snapshots ORDER BY id DESC LIMIT 1').fetchone()
+            if current and 0<=now-current['ts']<=3:
+                advanced=json.loads(current['payload']);forecast=advanced.get('baseline')
+                if advanced.get('mode')=='LIVE' and forecast and forecast.get('p_up') is not None:
+                    p=forecast
         age=now-p['observed_at'] if p else None
         fresh = (p and p.get('p_up') is not None and age <= 30
                  and now-p.get('btc_timestamp',0) <= 20
@@ -89,6 +95,33 @@ def state():
         return jsonify(snapshot())
     except (sqlite3.Error, ValueError, KeyError):
         return jsonify({'state':'ERROR','reason':'Database unavailable; scanner may be initializing','now':time.time()}),503
+
+_intel_cache={}
+_intel_lock=threading.Lock()
+
+@app.get('/api/intelligence')
+def intelligence_state():
+    selection=request.args.get('range','today');days=request.args.get('days','7')
+    if selection not in ('today','7','30','all') or days not in ('7','30','90'):
+        return jsonify({'error':'Unsupported range'}),400
+    try:page=int(request.args.get('page','0'))
+    except ValueError:return jsonify({'error':'Invalid page'}),400
+    if not 0<=page<=100000:return jsonify({'error':'Invalid page'}),400
+    now=time.time();key=(str(DB),selection,days,page)
+    try:
+        with _intel_lock:
+            cached=_intel_cache.get(key)
+            if not cached or now-cached[0]>=1.5:
+                from intelligence.service import dashboard_snapshot
+                payload=dashboard_snapshot(DB,selection,days,now,page)
+                # Full evaluation audit remains in SQLite; browser gets compact rows.
+                latest=payload.get('models',{}).get('latest',{})
+                if 'predictions' in latest:latest['predictions']=latest['predictions'][-100:]
+                _intel_cache[key]=(now,payload)
+            payload=_intel_cache[key][1]
+        return jsonify(payload)
+    except (sqlite3.Error,ValueError,KeyError):
+        return jsonify({'status':'WARMING UP','reason':'Intelligence worker has not initialized this database yet','now':now})
 
 @app.get('/healthz')
 def health():

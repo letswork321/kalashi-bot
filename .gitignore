@@ -6,3 +6,13 @@ data/
 *.lock
 .env
 .env.*
+
+recovery/
+data-import-*/
+*.dpapi
+*.pem
+*.key
+
+# Inspection-only downloaded documentation is not shipped.
+references/*.txt
+references/*.yaml

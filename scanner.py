@@ -77,7 +77,7 @@ class Kalshi:
     def current(self, now):
         markets, cursor = [], ''
         for _ in range(20):
-            data = self.http.get(KALSHI, '/markets', {'series_ticker': 'KXBTC15M', 'status': 'open', 'limit': 200, 'cursor': cursor})
+            data = self.http.get(KALSHI, '/markets', {'series_ticker': 'KXBTC15M', 'status': 'open', 'limit': 200, 'cursor': cursor, 'min_close_ts': int(now), 'max_close_ts': int(now+3600)})
             markets.extend(data.get('markets', []))
             cursor = data.get('cursor', '')
             if not cursor:
@@ -264,8 +264,8 @@ class Config:
     alert_delta: float = 0.05
 
 def fee(price, quantity, rate, multiplier):
-    raw = Decimal(str(rate)) * Decimal(str(multiplier)) * quantity * Decimal(str(price)) * (1-Decimal(str(price)))
-    cost = Decimal(str(price)) * quantity
+    raw = Decimal(str(rate)) * Decimal(str(multiplier)) * Decimal(str(quantity)) * Decimal(str(price)) * (1-Decimal(str(price)))
+    cost = Decimal(str(price)) * Decimal(str(quantity))
     return float((cost+raw).quantize(Decimal('0.0001'), rounding=ROUND_CEILING)-cost)
 
 def analyze(market, book, feed, now, config, multiplier):
@@ -668,6 +668,7 @@ def main(argv=None):
         emit(checks)
         return 0 if checks['ready_for_prediction'] else 1
     db = ROOT/'data'/'mock.sqlite3' if args.mock else args.db
+    upgrade_worker = None
     store = Store(db,'mock' if args.mock else 'live')
     try:
         if args.report:
@@ -689,6 +690,10 @@ def main(argv=None):
             engine.reconcile(time.time())
             emit(store.report())
             return 0
+        if not args.once and os.environ.get('INTELLIGENCE_ENABLED','true').lower() == 'true':
+            from intelligence.service import IntelligenceWorker
+            upgrade_worker = IntelligenceWorker(db, engine.telegram)
+            upgrade_worker.start()
         emit({'mode':'LIVE READ-ONLY','model':MODEL,'telegram_enabled':engine.telegram.enabled,
               'database':str(db),'trade_execution':False})
         while True:
@@ -697,6 +702,7 @@ def main(argv=None):
                 return 0 if p.get('p_up') is not None else 1
             time.sleep(config.poll)
     finally:
+        if upgrade_worker: upgrade_worker.close()
         store.db.close()
 
 if __name__ == '__main__':
