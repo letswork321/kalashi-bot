@@ -68,4 +68,4 @@ def tick_metrics(trades,now):
         return eligible[-1]
     a=price_before(now-50);b=price_before(now-25);c=rows[-1]['price']
     first=math.log(b/a)/(25/60);second=math.log(c/b)/(25/60)
-    return {'velocity':math.log(c/a)/(50/60),'acceleration':(second-first)/(25/60),'trades':len(rows),'age':now-rows[-1]['ts']}
+    return {'velocity':math.log(c/a)/(50/60),'acceleration':(second-first)/(25/60),'last_trade_timestamp':rows[-1]['ts'],'trades':len(rows),'volume_btc':sum(r['size'] for r in rows),'age':now-rows[-1]['ts']}

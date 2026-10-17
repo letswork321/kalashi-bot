@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import time
 import threading
+import secrets
 from flask import Flask, Response, jsonify, render_template, request
 from scanner import ROOT, Store, timestamp
 
@@ -14,6 +15,7 @@ app.config['MAX_CONTENT_LENGTH'] = 1024
 DB = Path(os.environ.get('SCANNER_DB', str(ROOT/'data'/'live.sqlite3')))
 _report_cache = {}
 _report_lock = threading.Lock()
+_alert_csrf = secrets.token_urlsafe(32)
 
 @app.before_request
 def authenticate():
@@ -127,6 +129,29 @@ def intelligence_state():
 def health():
     # Process health only. /api/state reports source freshness separately.
     return jsonify({'web':'ok'})
+
+@app.route('/api/alert-settings', methods=['GET','POST'])
+def alert_settings():
+    """Only authenticated, same-origin JSON writes with a process-bound CSRF token."""
+    from intelligence.alert_settings import settings,save
+    from intelligence.storage import connect
+    if request.method=='POST':
+        if not request.is_json or not hmac.compare_digest(request.headers.get('X-Alert-CSRF','').encode(),_alert_csrf.encode()):
+            return jsonify({'error':'Reload settings before saving; CSRF token required'}),403
+        origin=request.headers.get('Origin')
+        if origin and origin.rstrip('/')!=request.host_url.rstrip('/'):
+            return jsonify({'error':'Same-origin settings only'}),403
+    if not DB.is_file():return jsonify({'error':'Start the scanner before changing settings'}),409
+    db=connect(DB)
+    try:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='intel_alert_settings'").fetchone():
+            return jsonify({'error':'Wait for the intelligence schema migration'}),409
+        values=save(db,request.get_json(silent=True)) if request.method=='POST' else settings(db)
+        with _intel_lock:_intel_cache.clear()
+        return jsonify({'settings':values,'csrf':_alert_csrf,'note':'Scalp switch never bypasses fast-data verification; no credentials stored here.'})
+    except ValueError as exc:return jsonify({'error':str(exc)}),400
+    except sqlite3.Error:return jsonify({'error':'Settings database busy or unavailable; retry'}),503
+    finally:db.close()
 
 if __name__ == '__main__':
     # Local testing only; production uses gunicorn in start.sh.

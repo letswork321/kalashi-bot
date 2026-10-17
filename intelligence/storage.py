@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS intel_models(version TEXT PRIMARY KEY,created REAL,tr
 CREATE TABLE IF NOT EXISTS intel_shadow(ticker TEXT PRIMARY KEY,version TEXT NOT NULL,observed REAL NOT NULL,p_up REAL NOT NULL,result TEXT);
 CREATE TABLE IF NOT EXISTS intel_jobs(id INTEGER PRIMARY KEY,kind TEXT,started REAL,ended REAL,start_ts REAL,end_ts REAL,status TEXT,rows INTEGER,message TEXT);
 CREATE TABLE IF NOT EXISTS intel_alerts(id INTEGER PRIMARY KEY,key TEXT UNIQUE,category TEXT,ticker TEXT,created REAL,expires REAL,message TEXT,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0,sent REAL);
+CREATE TABLE IF NOT EXISTS intel_late_locks(ticker TEXT PRIMARY KEY,scheduled REAL NOT NULL,deadline REAL NOT NULL,state TEXT NOT NULL DEFAULT 'LATE',direction TEXT NOT NULL,p_up REAL NOT NULL,observed REAL NOT NULL,features TEXT NOT NULL,model TEXT NOT NULL,reason TEXT NOT NULL,result TEXT,regime TEXT,strike REAL NOT NULL,btc_price REAL NOT NULL);
+CREATE TRIGGER IF NOT EXISTS immutable_late_forecast BEFORE UPDATE OF direction,p_up,observed,features,model,state,scheduled,deadline,strike,btc_price ON intel_late_locks BEGIN SELECT RAISE(ABORT,'Late forecast decision is immutable'); END;
+CREATE TABLE IF NOT EXISTS intel_flip_followups(radar_id INTEGER PRIMARY KEY,ticker TEXT NOT NULL,side TEXT NOT NULL,signal_ts REAL NOT NULL,entry_due REAL NOT NULL,target REAL NOT NULL,state TEXT NOT NULL DEFAULT 'WAIT_ENTRY',entry_ts REAL,entry REAL,entry_fee REAL,exit_due REAL,exit_ts REAL,exit REAL,exit_fee REAL,pnl REAL,target_seen REAL,reason TEXT,signal TEXT);
+CREATE INDEX IF NOT EXISTS iff_state ON intel_flip_followups(state,ticker);
+CREATE TABLE IF NOT EXISTS intel_entry_state(ticker TEXT PRIMARY KEY,side TEXT,key TEXT NOT NULL,issued REAL NOT NULL,expires REAL NOT NULL,active INTEGER NOT NULL DEFAULT 1,withdrawn REAL);
+CREATE TABLE IF NOT EXISTS intel_lock_attempts(id INTEGER PRIMARY KEY,ticker TEXT NOT NULL,observed REAL NOT NULL,reason TEXT NOT NULL,outcome TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ila_ticker_time ON intel_lock_attempts(ticker,observed);
+CREATE TABLE IF NOT EXISTS intel_alert_settings(category TEXT PRIMARY KEY,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS intel_alert_evidence(key TEXT PRIMARY KEY,alert_id INTEGER UNIQUE,category TEXT NOT NULL,ticker TEXT NOT NULL,created REAL NOT NULL,side TEXT,hold REAL,snapshot TEXT NOT NULL,sent REAL,sim_key TEXT UNIQUE,evaluation TEXT NOT NULL DEFAULT 'AWAITING_DELIVERY');
+CREATE TRIGGER IF NOT EXISTS immutable_alert_evidence BEFORE UPDATE OF key,alert_id,category,ticker,created,side,hold,snapshot ON intel_alert_evidence BEGIN SELECT RAISE(ABORT,'Alert decision evidence is immutable'); END;
+CREATE INDEX IF NOT EXISTS iae_time ON intel_alert_evidence(created,category);
 CREATE TABLE IF NOT EXISTS intel_kalshi_candles(ticker TEXT,ts REAL,payload TEXT,PRIMARY KEY(ticker,ts));
 CREATE TABLE IF NOT EXISTS intel_health(name TEXT PRIMARY KEY,ts REAL,payload TEXT);
 CREATE TABLE IF NOT EXISTS intel_hourly(hour_utc REAL PRIMARY KEY,n INTEGER,spread_sum REAL,spread_n INTEGER,depth_sum REAL,depth_n INTEGER,velocity_sum REAL,tick_n INTEGER,volatility_sum REAL,vol_n INTEGER,flip_moves INTEGER,kalshi_velocity_sum REAL,kalshi_velocity_n INTEGER);
@@ -72,7 +83,7 @@ def migrate(path):
         if mode and mode['value']=='mock':
             db.close();raise ValueError('Intelligence refuses to mix genuine collection with the mock database')
     exists=db.execute("SELECT 1 FROM sqlite_master WHERE name='intel_schema'").fetchone()
-    if exists and db.execute('SELECT 1 FROM intel_schema WHERE version=5').fetchone():return db
+    if exists and db.execute('SELECT 1 FROM intel_schema WHERE version=7').fetchone():return db
     # No migration writes until a complete online backup of pre-existing history exists.
     tables=db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     saved=backup_database(path) if tables else None
@@ -88,7 +99,14 @@ def migrate(path):
             db.execute('INSERT INTO intel_books SELECT * FROM intel_books_previous')
             db.execute('DROP TABLE intel_books_previous')
             db.execute('CREATE INDEX ib_ticker_time ON intel_books(ticker,ts)')
-        db.execute('INSERT OR IGNORE INTO intel_schema VALUES(5,?,?)',(time.time(),saved))
+        if 'scope' not in {r['name'] for r in db.execute('PRAGMA table_info(intel_alerts)')}:
+            db.execute('ALTER TABLE intel_alerts ADD COLUMN scope TEXT')
+        for column in ('strike','btc_price'):
+            if column not in {r['name'] for r in db.execute('PRAGMA table_info(intel_locks)')}:
+                db.execute('ALTER TABLE intel_locks ADD COLUMN '+column+' REAL')
+        db.execute('DROP TRIGGER IF EXISTS immutable_locked_forecast')
+        db.execute("CREATE TRIGGER immutable_locked_forecast BEFORE UPDATE OF direction,p_up,observed,features,model,state,scheduled,deadline,strike,btc_price ON intel_locks WHEN OLD.state IN ('LOCKED','MISSED') BEGIN SELECT RAISE(ABORT,'Forecast decision is immutable'); END;")
+        db.execute('INSERT OR IGNORE INTO intel_schema VALUES(7,?,?)',(time.time(),saved))
         db.commit()
     except Exception:db.rollback();db.close();raise
     return db
@@ -113,6 +131,13 @@ def tracker_summary(db,selection='today',now=None,offset=0,limit=100):
         r['correct']=None if r['state']!='LOCKED' or r['result'] not in ('yes','no') else (r['direction']=='UP')==(r['result']=='yes')
         r['predicted_probability']=r['p_up'] if r['direction']=='UP' else 1-r['p_up'] if r['direction']=='DOWN' and r['p_up'] is not None else None
         r['time_et']=datetime.fromtimestamp(r['scheduled'],ET).isoformat()
+    late_rows=[dict(r) for r in db.execute('SELECT l.*,m.opened,m.closed FROM intel_late_locks l JOIN intel_markets m USING(ticker) WHERE scheduled>=? AND observed<=? ORDER BY observed DESC',(start,now))]
+    for r in late_rows:
+        r.pop('features',None);r['correct']=None if r['result'] not in ('yes','no') else (r['direction']=='UP')==(r['result']=='yes')
+        r['predicted_probability']=r['p_up'] if r['direction']=='UP' else 1-r['p_up'];r['time_et']=datetime.fromtimestamp(r['observed'],ET).isoformat()
+    late_settled=[r for r in late_rows if r['correct'] is not None];late_wins=sum(r['correct'] for r in late_settled)
+    rows=sorted(rows+late_rows,key=lambda r:r.get('observed') or r['scheduled'],reverse=True)
+    attempts=[dict(r) for r in db.execute('SELECT ticker,observed,reason,outcome FROM intel_lock_attempts ORDER BY id DESC LIMIT 50')]
     wins=sum((r['direction']=='UP')==(r['result']=='yes') for r in settled)
     streak=0;last=None
     for r in settled:
@@ -120,7 +145,7 @@ def tracker_summary(db,selection='today',now=None,offset=0,limit=100):
         if last is None:last=won
         if won!=last:break
         streak+=1
-    return {'range':selection,'wins':wins,'losses':len(settled)-wins,'accuracy':wins/len(settled) if settled else None,'streak':{'kind':'WIN' if last else 'LOSS' if last is not None else 'NONE','count':streak},'pending':sum(r['state']=='LOCKED' and not r['result'] for r in rows),'missed':sum(r['state']=='MISSED' for r in rows),'awaiting_lock':sum(r['state']=='PENDING' for r in rows),'sample_size':len(settled),'rows':rows[offset:offset+limit],'total_rows':len(rows),'offset':offset,'page_size':limit,'has_next':len(rows)>offset+limit,'coverage':'Only discovered eligible markets; historical discoveries without an on-time observation are MISSED, never reconstructed.'}
+    return {'late':{'count':len(late_rows),'wins':late_wins,'losses':len(late_settled)-late_wins,'pending':len(late_rows)-len(late_settled),'accuracy':late_wins/len(late_settled) if late_settled else None},'attempts':attempts,'range':selection,'wins':wins,'losses':len(settled)-wins,'accuracy':wins/len(settled) if settled else None,'streak':{'kind':'WIN' if last else 'LOSS' if last is not None else 'NONE','count':streak},'pending':sum(r['state']=='LOCKED' and not r['result'] for r in rows),'missed':sum(r['state']=='MISSED' for r in rows),'awaiting_lock':sum(r['state']=='PENDING' for r in rows),'sample_size':len(settled),'rows':rows[offset:offset+limit],'total_rows':len(rows),'offset':offset,'page_size':limit,'has_next':len(rows)>offset+limit,'coverage':'Only discovered eligible markets; historical discoveries without an on-time observation are MISSED, never reconstructed.'}
 
 def register_market(db,m,seen):
     from scanner import timestamp
@@ -133,6 +158,7 @@ def register_market(db,m,seen):
         db.execute('INSERT OR IGNORE INTO intel_reversals(ticker,target,state,reason) VALUES(?,?,?,?)',(m['ticker'],op+600,'MISSED' if seen>op+603 else 'PENDING','10-minute observation unavailable' if seen>op+603 else 'Waiting for 10-minute sample'))
         if result:
             db.execute('UPDATE intel_locks SET result=? WHERE ticker=?',(result,m['ticker']))
+            db.execute('UPDATE intel_late_locks SET result=? WHERE ticker=?',(result,m['ticker']))
             db.execute('UPDATE intel_engines SET result=? WHERE ticker=?',(result,m['ticker']))
             db.execute('UPDATE intel_shadow SET result=? WHERE ticker=?',(result,m['ticker']))
     return True
@@ -148,5 +174,5 @@ def lock_forecast(db,m,p,now,features,regime,entries=None,multiplier=1):
             if now>row['deadline']:db.execute("UPDATE intel_locks SET state='MISSED',reason='No valid on-time live forecast' WHERE ticker=? AND state='PENDING'",(m['ticker'],))
             return None
         direction='UP' if probability>=.5 else 'DOWN'
-        db.execute("UPDATE intel_locks SET state='LOCKED',direction=?,p_up=?,observed=?,features=?,model=?,reason=?,regime=?,entry_up=?,entry_down=?,fee_multiplier=? WHERE ticker=? AND state='PENDING'",(direction,probability,now,dumps(features),p['model'],'Locked at +60 seconds; probability uncalibrated',regime,(entries or {}).get('UP'),(entries or {}).get('DOWN'),multiplier,m['ticker']))
+        db.execute("UPDATE intel_locks SET state='LOCKED',direction=?,p_up=?,observed=?,features=?,model=?,reason=?,regime=?,entry_up=?,entry_down=?,fee_multiplier=?,strike=?,btc_price=? WHERE ticker=? AND state='PENDING'",(direction,probability,now,dumps(features),p['model'],'Locked at +60 seconds; probability uncalibrated',regime,(entries or {}).get('UP'),(entries or {}).get('DOWN'),multiplier,m.get('floor_strike'),p.get('btc_price'),m['ticker']))
     return dict(db.execute('SELECT * FROM intel_locks WHERE ticker=?',(m['ticker'],)).fetchone())

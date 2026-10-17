@@ -60,11 +60,14 @@ class EconomicsTests(unittest.TestCase):
 
 class ScalpCadenceTests(unittest.TestCase):
     def test_optional_feed_must_have_real_cadence_before_opportunity(self):
-        s=snapshot();s['book']=Book.parse({'yes_dollars':[['.49','100']],'no_dollars':[['.50','100']]});s.update(book_source='websocket',ws_sequence_valid=True,tick_metrics={'velocity':.001,'acceleration':.001})
+        s=snapshot();s['book']=Book.parse({'yes_dollars':[['.49','100']],'no_dollars':[['.50','100']]});s.update(book_source='websocket',ws_sequence_valid=True,tick_metrics={'velocity':.001,'acceleration':.001,'age':0})
         now=s['now'];ticker=s['market']['ticker']
         s['book_history']=[{'ticker':ticker,'side':side,'ts':now-20+i*.5,'bid':.4+i*.002} for i in range(41) for side in ('UP','DOWN')]
         result=scalp_radar(s)
-        self.assertTrue(any(r['status']=='OPPORTUNITY' for r in result['rows']))
+        self.assertTrue(any(r['status']=='WATCH' for r in result['rows']))
+        self.assertFalse(any(r['status']=='OPPORTUNITY' for r in result['rows']))
+        s['scalp_evidence']={'UP:'+str(h):{'validated':True} for h in (20,40,60)}
+        self.assertTrue(any(r['status']=='OPPORTUNITY' for r in scalp_radar(s)['rows']))
         s['ws_sequence_valid']=False
         self.assertTrue(all(r['status']=='FASTER MARKET DATA REQUIRED' for r in scalp_radar(s)['rows']))
     def test_clustered_updates_with_long_gap_are_not_fast_coverage(self):

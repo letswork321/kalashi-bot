@@ -268,7 +268,7 @@ def fee(price, quantity, rate, multiplier):
     cost = Decimal(str(price)) * Decimal(str(quantity))
     return float((cost+raw).quantize(Decimal('0.0001'), rounding=ROUND_CEILING)-cost)
 
-def analyze(market, book, feed, now, config, multiplier):
+def forecast_components(market, book, feed, now):
     if market.get('status') not in ('active', 'open'):
         raise DataError('Market is not active')
     if market.get('market_type') != 'binary' or market.get('strike_type') != 'greater_or_equal':
@@ -292,6 +292,10 @@ def analyze(market, book, feed, now, config, multiplier):
     adjustment = 0.015*math.tanh((f['rsi14']-50)/20) + 0.015*book.imbalance
     adjustment += 0.01*math.tanh(f['momentum_10m']/max(vol, 1e-6))*min(f['volume_ratio'], 2)/2
     p_up = min(0.95, max(0.05, 0.60*price_prob + 0.40*book.implied + adjustment))
+    return f,p_up,strike,remaining
+
+def analyze(market, book, feed, now, config, multiplier):
+    f,p_up,strike,remaining=forecast_components(market,book,feed,now)
     candidates = []
     for direction, p in [('UP', p_up), ('DOWN', 1-p_up)]:
         try:
@@ -369,7 +373,9 @@ class Store:
             if p['signal'] != 'NO TRADE' and c:
                 self.db.execute('INSERT OR IGNORE INTO paper(ticker,prediction_id,direction,quantity,entry,fee,opened) VALUES(?,?,?,?,?,?,?)',
                                 (p['ticker'],pid,p['signal'],config.quantity,c['entry'],c['fee'],now))
-            if alerts and p.get('ticker'):
+            from intelligence.alert_settings import settings
+            advanced=self.db.execute("SELECT 1 FROM sqlite_master WHERE name='intel_entry_state'").fetchone()
+            if alerts and not advanced and settings(self.db)['directional'] and p.get('ticker'):
                 prev = self.db.execute('SELECT * FROM alert_state WHERE ticker=?',(p['ticker'],)).fetchone()
                 # First NO TRADE is quiet; a change from an actionable signal is useful.
                 actionable = p['signal'] in ('UP','DOWN')
@@ -515,9 +521,22 @@ class Telegram:
             return
         with store.db:
             store.db.execute("UPDATE alerts SET status='expired' WHERE status='pending' AND expires<=?",(now,))
+        from intelligence.alert_settings import settings
+        from intelligence.notifications import record_legacy_delivery,settlement_sent,Notifications
+        switches=settings(store.db)
+        advanced=store.db.execute("SELECT 1 FROM sqlite_master WHERE name='intel_entry_state'").fetchone()
+        with store.db:
+            if advanced:store.db.execute("UPDATE alerts SET status='superseded' WHERE status='pending'")
+            if not switches['directional']:store.db.execute("UPDATE alerts SET status='disabled' WHERE status='pending'")
+            if not switches['settlement']:store.db.execute("UPDATE outcome_alerts SET status='disabled' WHERE status='pending'")
         for row in store.db.execute("SELECT * FROM alerts WHERE status='pending' AND next_try<=? ORDER BY id LIMIT 3",(now if signals else -1,)).fetchall():
+            observation=json.loads(row['payload'])
+            # Do not deliver an old entry merely because its retry is now due.
+            if observation.get('signal') in ('UP','DOWN') and not (0<=now-observation.get('observed_at',0)<=5 and 0<=now-observation.get('btc_timestamp',0)<=5):
+                with store.db:store.db.execute("UPDATE alerts SET status='expired' WHERE id=?",(row['id'],))
+                continue
             try:
-                self.send(self.message(json.loads(row['payload'])))
+                self.send(self.message(observation))
             except DataError as e:
                 with store.db:
                     store.db.execute('UPDATE alerts SET attempts=attempts+1,next_try=? WHERE id=?',
@@ -526,8 +545,20 @@ class Telegram:
             else:
                 with store.db:
                     store.db.execute("UPDATE alerts SET status='sent',attempts=attempts+1 WHERE id=?",(row['id'],))
+                record_legacy_delivery(store.db,'legacy-entry:'+str(row['id']),'directional',row['ticker'],time.time(),observation,observation.get('signal') if observation.get('signal') in ('UP','DOWN') else None,row['created'])
 
         for row in store.db.execute("SELECT * FROM outcome_alerts WHERE status='pending' AND next_try<=? ORDER BY created LIMIT 3",(now,)).fetchall():
+            if advanced:
+                # One persisted dispatcher/outbox owns outcomes after migration.
+                # This prevents races between original and intelligence senders.
+                key='final:'+row['ticker']
+                Notifications(store.db,self).enqueue('settlement',row['ticker'],key,row['message'],now,now+3600)
+                if store.db.execute('SELECT 1 FROM intel_alerts WHERE key=?',(key,)).fetchone():
+                    with store.db:store.db.execute("UPDATE outcome_alerts SET status='forwarded' WHERE ticker=?",(row['ticker'],))
+                continue
+            if settlement_sent(store.db,row['ticker']):
+                with store.db:store.db.execute("UPDATE outcome_alerts SET status='superseded' WHERE ticker=?",(row['ticker'],))
+                continue
             try:
                 self.send(row['message'])
             except DataError as e:
@@ -538,6 +569,7 @@ class Telegram:
             else:
                 with store.db:
                     store.db.execute("UPDATE outcome_alerts SET status='sent',attempts=attempts+1 WHERE ticker=?",(row['ticker'],))
+                record_legacy_delivery(store.db,'legacy-outcome:'+row['ticker'],'settlement',row['ticker'],time.time(),{'message':row['message']},created=row['created'])
 
 class Engine:
     def __init__(self, store, config, telegram=None):

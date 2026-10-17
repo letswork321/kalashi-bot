@@ -118,7 +118,8 @@ class ScannerTests(Fixture, unittest.TestCase):
         self.assertEqual(r['attempts'],1)
         t.session.post=Mock(return_value=Mock(ok=True,status_code=200,json=lambda:{'ok':True}))
         t.flush(self.store,self.now+20)
-        self.assertEqual(self.store.db.execute('SELECT status FROM alerts').fetchone()[0],'sent')
+        # A network retry cannot deliver a now-stale directional entry.
+        self.assertEqual(self.store.db.execute('SELECT status FROM alerts').fetchone()[0],'expired')
 
     def test_market_discovery_uses_time_window(self):
         h=Mock()

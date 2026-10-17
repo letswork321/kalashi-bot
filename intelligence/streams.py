@@ -39,8 +39,10 @@ class SequencedBook:
         self.received=now
         event=message.get('sending_ts_ms') or m.get('ts_ms')
         self.latency=abs(now-event/1000) if event is not None else 99
-        for side,book in [('UP',self.yes),('DOWN',self.no)]:
-            if book:self.history.append({'ticker':self.ticker,'ts':now,'side':side,'bid':max(book)})
+        for side,book,opposite in [('UP',self.yes,self.no),('DOWN',self.no,self.yes)]:
+            if book and opposite:
+                bid=max(book);ask=1-max(opposite)
+                self.history.append({'ticker':self.ticker,'ts':now,'side':side,'bid':bid,'ask':ask,'spread':ask-bid,'bid_size':book[bid],'ask_size':opposite[max(opposite)]})
     def snapshot(self):
         if self.seq is None:return None
         return {'ticker':self.ticker,'yes':sorted(self.yes.items(),reverse=True),'no':sorted(self.no.items(),reverse=True),'received':self.received,'latency':self.latency,'seq':self.seq,'history':list(self.history)}
