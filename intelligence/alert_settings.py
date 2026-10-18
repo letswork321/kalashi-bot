@@ -3,10 +3,10 @@ import os
 import sqlite3
 import time
 
-CATEGORIES = {'preliminary', 'locked', 'withdrawal', 'directional', 'scalp', 'flip', 'settlement', 'breakout', 'reversal', 'confluence', 'daily'}
+CATEGORIES = {'preliminary', 'locked', 'withdrawal', 'directional', 'scalp', 'flip', 'settlement', 'breakout', 'reversal', 'confluence', 'daily', 'callout'}
 
 def settings(db, base=None):
-    defaults = {c: c in {'directional', 'settlement','locked','withdrawal'} for c in CATEGORIES}
+    defaults = {c: c in {'directional', 'settlement','locked','withdrawal','callout'} for c in CATEGORIES}
     defaults.update({c.strip(): True for c in os.environ.get('INTELLIGENCE_ALERT_CATEGORIES', '').split(',') if c.strip() in CATEGORIES})
     if base is not None:defaults=dict(base)
     try:
