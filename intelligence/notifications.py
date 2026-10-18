@@ -41,6 +41,15 @@ class Notifications:
                 self.db.execute('INSERT INTO intel_alert_evidence(key,alert_id,category,ticker,created,side,hold,snapshot) VALUES(?,?,?,?,?,?,?,?)',
                                 (key,cur.lastrowid,category,ticker,now,evidence.get('side'),evidence.get('window',60 if category=='flip' else None),dumps(evidence)))
         return True
+    def callout(self,s,call):
+        """Queue an auditable, plainly worded BTC WATCH with no trade claims."""
+        if not call or 'callout' not in self.enabled:return False
+        from .callouts import message,record
+        key=f"callout:{call['ticker']}:{int(call['candle_time'])}:{call['direction']}"
+        ok=self.enqueue('callout',call['ticker'],key,message(call),s['now'],
+                        min(s['now']+15,s['market']['closed']-15),scope='callout')
+        if ok:record(self.db,call,key)
+        return ok
     def locked(self,s,record):
         m=s['market'];p=record['p_up'] if record['direction']=='UP' else 1-record['p_up'];late=record['state']=='LATE'
         title='LATE FORECAST — SEPARATE ACCURACY COHORT' if late else 'LOCKED 15-MINUTE FORECAST'
@@ -168,6 +177,10 @@ class Notifications:
                                 invalid=invalid or current.get('status') not in ('WATCH','OPPORTUNITY') or (e.get('status')=='OPPORTUNITY' and current.get('status')!='OPPORTUNITY')
                         except (ValueError,KeyError,TypeError):invalid=True
                     else:invalid=True
+            if r['category']=='callout':
+                invalid=invalid or not s or s.get('mode')!='live' or s.get('market',{}).get('ticker')!=r['ticker']
+                if s:
+                    invalid=invalid or not (0<=check-s.get('quote_ts',0)<=2 and 0<=check-s.get('book_ts',0)<=2)
             if r['category']=='settlement' and settlement_sent(self.db,r['ticker']):invalid=True
             if invalid:
                 with self.db:self.db.execute("UPDATE intel_alerts SET state='expired' WHERE id=?",(r['id'],))
@@ -181,6 +194,9 @@ class Notifications:
                 sent=time.time() if s is not None else now
                 with self.db:
                     self.db.execute("UPDATE intel_alerts SET state='sent',sent=?,attempts=attempts+1 WHERE id=?",(sent,r['id']))
+                    if r['category']=='callout':
+                        from .callouts import acknowledged
+                        acknowledged(self.db,r['key'],sent)
                     self.db.execute("UPDATE intel_alert_evidence SET sent=?,evaluation=? WHERE alert_id=?",(sent,'FORECAST_OR_OUTCOME_NOTIFICATION' if r['category'] in ('locked','preliminary','settlement','daily','withdrawal') else 'DELIVERED_LATE_NO_ENTRY' if sent>=r['expires'] else 'AWAITING_LIVE_OBSERVATION',r['id']))
         with self.db:
             self.db.execute("UPDATE intel_alert_evidence SET evaluation='NOT_DELIVERED' WHERE sent IS NULL AND alert_id IN (SELECT id FROM intel_alerts WHERE state NOT IN ('pending','sent'))")
