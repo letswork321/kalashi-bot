@@ -76,7 +76,7 @@ class Collector:
         if self.due('discovery',15,now) or not self.market or timestamp(self.market['close_time'])<=now:self.discovery(now)
         m=self.market
         if not urgent:
-            for period,interval in [(900,60),(60,30)]:
+            for period,interval in [(900,60),(300,30),(60,15)]:
                 if self.due('candles'+str(period),interval,now):
                     try:self.candles(period,now)
                     except Exception as exc:self.health('candles'+str(period),False,type(exc).__name__,now)
@@ -110,6 +110,8 @@ class Collector:
         candles=[dict(r) for r in self.db.execute("SELECT ts,low,high,open,close,volume FROM intel_candles WHERE source='coinbase' AND period=900 AND ts+900<=? ORDER BY ts DESC LIMIT 280",(now,))][::-1]
         trades=[dict(r) for r in self.db.execute('SELECT id,ts,price,size FROM intel_btc_trades WHERE ts>=? AND ts<=? ORDER BY ts,id',(now-120,now))]
         one=[list(r) for r in self.db.execute("SELECT ts,low,high,open,close,volume FROM intel_candles WHERE period=60 AND ts+60<=? ORDER BY ts DESC LIMIT 180",(now,))][::-1]
+        five=[dict(r) for r in self.db.execute("SELECT ts,low,high,open,close,volume FROM intel_candles WHERE source='coinbase' AND period=300 AND ts+300<=? ORDER BY ts DESC LIMIT 180",(now,))][::-1]
+        one_named=[dict(zip(('ts','low','high','open','close','volume'),r)) for r in one]
         baseline=None
         if book and now-book_ts<=3 and self.fee_valid:
             try:baseline=analyze(m,book,Feed(price,quote_ts,one),now,Config(),self.multiplier)
@@ -128,7 +130,7 @@ class Collector:
         latest_trade=self.db.execute('SELECT max(ts) FROM intel_btc_trades').fetchone()[0]
         v=self.vwap(latest_trade) if latest_trade and now-latest_trade<=3 else None
         close=candles[-1]['ts']+900 if candles else 0
-        out={'now':now,'market':{'ticker':m['ticker'],'opened':opened,'closed':closed,'strike':m.get('floor_strike'),'raw':m},'price':price,'quote_ts':quote_ts,'candles15':candles,'trades':trades,'vwap':v,'vwap_at_close':self.vwap(close) if close else None,'book':book,'book_id':book_id,'book_ts':book_ts,'book_latency':latency,'book_source':source,'ws_sequence_valid':seq,'book_history':history,'fee_multiplier':self.multiplier,'fee_valid':self.fee_valid,'baseline':baseline,'next_market':self.next_market,'mode':'live'}
+        out={'now':now,'market':{'ticker':m['ticker'],'opened':opened,'closed':closed,'strike':m.get('floor_strike'),'raw':m},'price':price,'quote_ts':quote_ts,'candles15':candles,'candles1':one_named,'candles5':five,'trades':trades,'vwap':v,'vwap_at_close':self.vwap(close) if close else None,'book':book,'book_id':book_id,'book_ts':book_ts,'book_latency':latency,'book_source':source,'ws_sequence_valid':seq,'book_history':history,'fee_multiplier':self.multiplier,'fee_valid':self.fee_valid,'baseline':baseline,'next_market':self.next_market,'mode':'live'}
         try:out['tick_metrics']=tick_metrics(trades,now)
         except InsufficientData:out['tick_metrics']=None
         if self.due('kalshi_trades',15,now) and not urgent:
