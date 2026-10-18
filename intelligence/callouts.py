@@ -96,7 +96,7 @@ def build(snapshot):
     if active_volume:
         reason += ' Completed-candle volume is elevated.'
     return {
-        'ticker':market['ticker'], 'direction':direction, 'observed':now,
+        'ticker':market['ticker'], 'direction':direction, 'observed':now, 'candle_time':one[-1]['ts'],
         'quote_ts':s['quote_ts'], 'btc_price':float(price), 'reason':reason,
         'horizon':HORIZON_SECONDS, 'minimum_move':MIN_MOVE,
         'title':f'BTC {direction} momentum building — WATCH',
