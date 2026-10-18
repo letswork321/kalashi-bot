@@ -14,6 +14,7 @@ from .models import features,shadow,retrain,evaluation
 from .research import Backfill,report
 from .streams import OptionalStream
 from .notifications import Notifications
+from . import callouts
 
 class IntelligenceWorker:
     def __init__(self,path,telegram=None):
@@ -112,7 +113,7 @@ class IntelligenceWorker:
     def run(self):
         db=None
         try:
-            db=migrate(self.path);collector=Collector(db,self.stream);sim=Simulator(db);notify=Notifications(db,self.telegram);self.stream.start()
+            db=migrate(self.path);callouts.ensure(db);collector=Collector(db,self.stream);sim=Simulator(db);notify=Notifications(db,self.telegram);self.stream.start()
             from .scheduler import ForecastScheduler
             self.scheduler=ForecastScheduler(self.path,self.telegram);self.scheduler.start()
             self.dispatcher=threading.Thread(target=self.dispatch_alerts,daemon=True,name='telegram-dispatcher');self.dispatcher.start()
@@ -130,7 +131,9 @@ class IntelligenceWorker:
                             db.execute("UPDATE intel_reversals SET state='MISSED',reason='10-minute quote observation missed' WHERE state='PENDING' AND target+3<?",(begin,))
                             db.execute("UPDATE intel_reversals SET outcome='MISSED' WHERE state='OBSERVED' AND band IS NOT NULL AND outcome IS NULL AND outcome_target+3<?",(begin,))
                         s=collector.snapshot();s['now']=time.time()
+                        callouts.observe(db,s['now'],s.get('quote_ts'),s.get('price'))
                         regime=regime_detector(s);s['regime']=regime
+                        active_callout=callouts.build(s)
                         observe_reversal(db,s)
                         r=db.execute('SELECT * FROM intel_reversals WHERE ticker=?',(s['market']['ticker'],)).fetchone();s['reversal']=dict(r) if r else None
                         s['reversal_evidence']=reversal_evidence(db,s['reversal'].get('band') if s['reversal'] else None)
@@ -160,11 +163,11 @@ class IntelligenceWorker:
                                     radar_last[radar_key]=(rr['status'],s['now'])
                                 if rr['status'] in states and (kind!='scalp' or rr.get('research_candidate')):sim.propose(f"{kind}:{s['market']['ticker']}:{rr['side']}:{int(s['now']//60)}:{rr.get('window',60)}",kind,kind,s,rr['side'],rr.get('window',60))
                         self.latest_snapshot=s
-                        notify.signals(s,engines,flips,scalps);notify.directional(s,fv,candidate)
+                        notify.signals(s,engines,flips,scalps);notify.directional(s,fv,candidate);notify.callout(s,active_callout)
                         nxt=s.get('next_market')
                         outlook={'status':'PRELIMINARY — NOT LOCKED','ticker':nxt['ticker'] if nxt else None,'strike':nxt.get('strike') if nxt else None,'direction':'UP' if (s.get('baseline') or {}).get('features',{}).get('ema9',0)>(s.get('baseline') or {}).get('features',{}).get('ema21',0) else 'DOWN' if s.get('baseline') else None,'probability':None,'reason':'Trend-only outlook; official next strike '+('available but not yet locked' if nxt and nxt.get('strike') else 'not yet available')+'. Never counted as a locked forecast.'}
                         book=s.get('book')
-                        payload={'version':VERSION,'timestamp':s['now'],'mode':'LIVE' if 0<=s['now']-s['quote_ts']<=3 else 'STALE','market':s['market'],'btc':{'price':s['price'],'timestamp':s['quote_ts'],'source':'Coinbase, not CF Benchmarks'},'book':{'yes_bid':book.yes[0][0],'yes_ask':1-book.no[0][0],'no_bid':book.no[0][0],'no_ask':1-book.yes[0][0],'spread':book.spread,'yes_bid_size':book.yes[0][1],'no_bid_size':book.no[0][1],'top5_depth':sum(q for _,q in book.yes[:5]+book.no[:5]),'source':s['book_source'],'timestamp':s['book_ts'],'latency':s['book_latency']} if book else None,'baseline':s.get('baseline'),'engines':engines,'flip':flips,'scalp':scalps,'fair_value':fv,'regime':regime,'premarket':outlook,'candidate':candidate,'telegram':notify.status(),'websocket':{'enabled':self.stream.enabled,'status':self.stream.state},'vwap':s.get('vwap'),'data_quality':{'fees':'VERIFIED' if s.get('fee_valid') else 'UNKNOWN — ECONOMICS DISABLED','trade_weighted_vwap':'VERIFIED' if s.get('vwap') else 'WARMING UP — COMPLETE UTC-DAY TRADE COVERAGE REQUIRED','rest_scalps':'FASTER MARKET DATA REQUIRED' if s['book_source']=='REST' else 'Sequence/cadence gates applied'}}
+                        payload={'version':VERSION,'timestamp':s['now'],'mode':'LIVE' if 0<=s['now']-s['quote_ts']<=3 else 'STALE','market':s['market'],'btc':{'price':s['price'],'timestamp':s['quote_ts'],'source':'Coinbase, not CF Benchmarks'},'book':{'yes_bid':book.yes[0][0],'yes_ask':1-book.no[0][0],'no_bid':book.no[0][0],'no_ask':1-book.yes[0][0],'spread':book.spread,'yes_bid_size':book.yes[0][1],'no_bid_size':book.no[0][1],'top5_depth':sum(q for _,q in book.yes[:5]+book.no[:5]),'source':s['book_source'],'timestamp':s['book_ts'],'latency':s['book_latency']} if book else None,'baseline':s.get('baseline'),'callout':active_callout,'engines':engines,'flip':flips,'scalp':scalps,'fair_value':fv,'regime':regime,'premarket':outlook,'candidate':candidate,'telegram':notify.status(),'websocket':{'enabled':self.stream.enabled,'status':self.stream.state},'vwap':s.get('vwap'),'data_quality':{'fees':'VERIFIED' if s.get('fee_valid') else 'UNKNOWN — ECONOMICS DISABLED','trade_weighted_vwap':'VERIFIED' if s.get('vwap') else 'WARMING UP — COMPLETE UTC-DAY TRADE COVERAGE REQUIRED','rest_scalps':'FASTER MARKET DATA REQUIRED' if s['book_source']=='REST' else 'Sequence/cadence gates applied'}}
                         with db:db.execute('INSERT INTO intel_snapshots(ts,ticker,payload) VALUES(?,?,?)',(s['now'],s['market']['ticker'],dumps(payload)))
                         today=datetime.fromtimestamp(s['now'],ET).date().isoformat()
                         if daily is not None and today!=daily:
@@ -199,5 +202,5 @@ def dashboard_snapshot(path,selection='today',days='7',now=None,page=0):
         from .storage import window_start
         from .notifications import performance
         from .alert_settings import settings
-        return {'status':'LIVE' if live and live['mode']=='LIVE' else 'WARMING UP / STALE','now':now,'live':live,'alert_settings':settings(db),'alert_performance':performance(db,window_start(selection,now)),'tracker':tracker_summary(db,selection,now,offset=page*100,limit=100),'simulator':Simulator(db).summary(window_start(selection,now)),'research':report(db,days,now),'models':evaluation(db),'reversal_evidence':reversal_evidence(db),'health':health,'engine_performance':[dict(r) for r in db.execute("SELECT engine,count(*) n,sum(CASE WHEN (direction='UP' AND result='yes') OR (direction='DOWN' AND result='no') THEN 1 ELSE 0 END) wins FROM intel_engines WHERE result IN ('yes','no') AND direction IS NOT NULL GROUP BY engine")],'flip_followups':[dict(r) for r in db.execute('SELECT * FROM intel_flip_followups ORDER BY radar_id DESC LIMIT 100')],'radar_history':[dict(r) for r in db.execute('SELECT kind,ticker,observed,side,status FROM intel_radars ORDER BY id DESC LIMIT 100')]}
+        return {'status':'LIVE' if live and live['mode']=='LIVE' else 'WARMING UP / STALE','now':now,'live':live,'alert_settings':settings(db),'alert_performance':performance(db,window_start(selection,now)),'tracker':tracker_summary(db,selection,now,offset=page*100,limit=100),'callouts':callouts.summary(db),'simulator':Simulator(db).summary(window_start(selection,now)),'research':report(db,days,now),'models':evaluation(db),'reversal_evidence':reversal_evidence(db),'health':health,'engine_performance':[dict(r) for r in db.execute("SELECT engine,count(*) n,sum(CASE WHEN (direction='UP' AND result='yes') OR (direction='DOWN' AND result='no') THEN 1 ELSE 0 END) wins FROM intel_engines WHERE result IN ('yes','no') AND direction IS NOT NULL GROUP BY engine")],'flip_followups':[dict(r) for r in db.execute('SELECT * FROM intel_flip_followups ORDER BY radar_id DESC LIMIT 100')],'radar_history':[dict(r) for r in db.execute('SELECT kind,ticker,observed,side,status FROM intel_radars ORDER BY id DESC LIMIT 100')]}
     finally:db.close()
