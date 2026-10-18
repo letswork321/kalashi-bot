@@ -5,9 +5,33 @@
 
 button{background:#18283e;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;cursor:pointer}button:disabled{opacity:.4;cursor:default}select{background:#18283e;color:var(--text);padding:9px 12px;border:1px solid var(--line);border-radius:7px}select:focus{outline:2px solid var(--up)}.engine-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:15px}.engine-card,.radar-card{background:#0d1726;border:1px solid var(--line);border-radius:10px;padding:17px;margin-bottom:12px;min-width:0}.engine-card h3{margin:0 0 12px;font-size:15px}.engine-signal{font-size:18px;font-weight:650;line-height:1.4}.engine-card p,.radar-card p{font-size:12px;overflow-wrap:anywhere}.quality{font-size:11px;color:var(--warn);margin:9px 0}.votes{display:grid;grid-template-columns:1fr auto;gap:7px;font-size:12px;margin-top:12px}.scoreline{font-size:60px;letter-spacing:-3px;font-weight:750}.tracker-head{display:grid;grid-template-columns:220px 1fr;gap:25px;padding:20px 0}.outlook{font-size:13px;padding:12px;border:1px dashed var(--line);border-radius:8px;margin:12px 0;color:var(--warn)}canvas{max-width:100%;height:170px;margin:18px 0}details{margin-top:14px}summary{cursor:pointer;color:var(--muted);font-size:13px}.audit{font:11px ui-monospace,monospace;overflow-wrap:anywhere;color:var(--muted)}@media(max-width:1000px){.engine-grid{grid-template-columns:1fr}.tracker-head{grid-template-columns:1fr}}
 .flip-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.flip-money{font-size:28px;font-weight:700;color:var(--text)}#alert-settings-controls label{display:flex;gap:10px;align-items:center;line-height:1.5}#alert-settings-controls input{width:20px;height:20px}@media(max-width:700px){.flip-grid{grid-template-columns:1fr}}
+
+/* Pro monitor: compact primary view, all research collapsed by default. */
+.callout-strip{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:16px;margin:16px 0}
+.callout-primary{border-left:4px solid var(--warn)}
+.callout-primary h2{margin-bottom:8px}.callout-primary p{margin:5px 0;font-size:14px;color:var(--text)}
+.callout-primary .muted{font-size:12px;color:var(--muted)}.callout-title{font-weight:750;font-size:23px;line-height:1.25}
+.callout-mini-score{font-size:26px;font-weight:740;letter-spacing:-1px}.callout-mini-score small{font-size:12px}
+.advanced-fold{grid-column:1/-1;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+.advanced-fold>summary{font-size:15px;color:var(--text);font-weight:600;padding:3px}
+.advanced-fold .grid{margin-bottom:0}.advanced-fold .panel{padding:16px}
+@media(max-width:700px){.callout-strip{grid-template-columns:1fr}.callout-title{font-size:20px}}
 </style></head><body><main>
 <header><div><h1>BTC <span class="muted">/</span> Kalshi Monitor</h1><p style="margin:7px 0 0">15-minute markets · Read-only research · Manual trading</p></div><div class="row"><span class="pill" id="state">CONNECTING</span><span class="muted" id="updated">—</span></div></header>
 <div class="banner" id="notice" role="status">Waiting for scanner data…</div>
+<div class="callout-strip" aria-label="Primary trading research summary">
+<section class="panel callout-primary" aria-live="polite"><h2>BTC Caller · Easy-to-read trend explanation</h2>
+<div class="callout-title" id="callout-headline">WAIT — watching for a verified breakout or breakdown</div>
+<p id="callout-explanation">Loading 1-minute and 5-minute completed BTC candles. No prediction until the data is fresh.</p>
+<p><strong>Entry:</strong> <span id="callout-entry">WAIT — no validated entry</span></p>
+<p><strong>Exit target:</strong> <span id="callout-target">Not reliable enough to estimate yet</span></p>
+<p class="muted" id="callout-freshness">No confirmed current callout · manual trading only</p></section>
+<section class="panel"><h2>BTC Callout Record</h2><div class="callout-mini-score" id="callout-record">0–0</div>
+<div class="sub" id="callout-rate">No scored callouts yet</div>
+<div class="sub" id="callout-missing">No Telegram callouts scored yet</div>
+<details><summary>Individual Telegram callouts and results</summary><div class="scroll"><table><thead><tr><th>Time (ET)</th><th>Direction</th><th>BTC at call</th><th>Result after 3m</th><th>Outcome</th></tr></thead><tbody id="callout-history"></tbody></table></div></details>
+<small>Measured BTC direction accuracy, NOT profits or guaranteed trade wins.</small></section>
+</div>
 <div class="grid">
 <section class="panel"><h2>BTC / USD</h2><div class="value" id="btc">—</div><div class="sub">Coinbase live trade · not the settlement index</div><div class="sub" id="btcAge">No quote yet</div></section>
 <section class="panel"><h2>Official price to beat</h2><div class="value" id="strike">—</div><div class="sub">Kalshi market floor_strike</div><div class="sub" id="distance">—</div></section>
@@ -18,13 +42,13 @@ button{background:#18283e;color:var(--text);border:1px solid var(--line);border-
 <section class="panel full"><h2>Settled performance · paper only</h2><div class="metrics" id="stats"></div><div class="sub">Accuracy uses the first valid forecast per settled market. Paper win rate uses one position per market, held to official settlement. Pending outcomes are excluded. Fees and fills are estimates.</div></section>
 
 <section class="panel full intelligence" id="intelligence-root">
-<div class="row"><div><h2>15-Minute Prediction Tracker</h2><small>One immutable forecast at +60 seconds · Official Kalshi results · Eastern Time · Historical unobserved windows are marked MISSED, never guessed</small></div><select id="tracker-range" aria-label="Prediction time range"><option value="today">Today</option><option value="7">7 days</option><option value="30">30 days</option><option value="all">All time</option></select></div>
+<div class="row"><div><h2>15-Minute Prediction Tracker</h2><small>One immutable forecast at +60 seconds · Official Kalshi results · Eastern Time · Historical unobserved windows are marked MISSED, never guessed</small></div><select id="tracker-range" aria-label="Prediction time range"><option value="today">Today</option><option value="7">7 days</option><option value="30">30 days</option><option value="all" selected>All time</option></select></div>
 <div class="banner" id="intel-status">Analytics worker warming up. No fabricated history or probabilities.</div>
 <div class="tracker-head"><div><div class="scoreline" id="locked-record">0–0</div><small>Locked forecast wins – losses</small></div><div class="metrics" id="locked-metrics"></div></div>
 <div class="outlook" id="premarket">PRELIMINARY OUTLOOK · Awaiting verified next-market context. Not counted as a locked prediction.</div>
 <div class="scroll"><table><thead><tr><th>Observation / scheduled · ET</th><th>Ticker</th><th>Locked side</th><th>Side estimate</th><th>Strike / model</th><th>State / reason</th><th>Official result</th><th>Win / loss</th></tr></thead><tbody id="locked-history"></tbody></table></div><div class="row"><button id="tracker-prev" type="button">Previous 100</button><small id="tracker-page">0 records</small><button id="tracker-next" type="button">Next 100</button></div><details><summary>Recent lock attempts and failure reasons</summary><div id="lock-attempts"></div></details>
 </section>
-<section class="panel full"><div class="row"><h2>Three Independent Strategy Engines</h2><small>Disagreement is displayed · No engine suppresses another</small></div><div class="engine-grid" id="engine-cards"></div></section>
+<details class="advanced-fold"><summary>Advanced analytics, strategy engines, research and notification settings — expand when needed</summary><div class="grid"><section class="panel full"><div class="row"><h2>Three Independent Strategy Engines</h2><small>Disagreement is displayed · No engine suppresses another</small></div><div class="engine-grid" id="engine-cards"></div></section>
 <section class="panel full"><h2>Flip Radar · Compare UP and DOWN</h2><div class="banner" id="flip-assessment">DATA UNAVAILABLE</div><p class="sub">Potential target profit is a conditional scenario. Positive expected value requires validated evidence, costs and executable depth.</p><div class="flip-grid" id="flip-cards"></div><details><summary>Forward-tracked flip observations · independent event studies, not a portfolio</summary><div class="scroll"><table><thead><tr><th>Signal · ET</th><th>Side</th><th>Original status</th><th>Study state</th><th>Observed delayed entry / 60s exit</th><th>After-cost net</th><th>Target observed?</th></tr></thead><tbody id="flip-followups"></tbody></table></div></details></section>
 <section class="panel wide"><h2>Scalp Radar · 20 / 40 / 60 seconds</h2><p class="sub">REST cannot validate sub-minute fills. Faster data must pass sequence, freshness and cadence checks.</p><div id="scalp-cards"></div></section>
 <section class="panel wide"><h2>Fair Value / Mispricing</h2><div id="fair-value"></div></section>
@@ -37,6 +61,7 @@ button{background:#18283e;color:var(--text);border:1px solid var(--line);border-
 <section class="panel full"><h2>Data Quality & Telegram Status</h2><div id="data-quality"></div><details><summary>Recent flip/scalp observations</summary><div class="scroll"><table><thead><tr><th>Time · ET</th><th>Market</th><th>Radar</th><th>Side</th><th>Status</th></tr></thead><tbody id="radar-history"></tbody></table></div></details></section>
 <section class="panel wide"><h2>Recent predictions</h2><div class="scroll"><table><thead><tr><th>Time</th><th>Market</th><th>Signal</th><th>UP est.</th><th>Result</th></tr></thead><tbody id="history"></tbody></table></div></section>
 <section class="panel wide"><h2>Paper positions & win / loss</h2><div class="scroll"><table><thead><tr><th>Market</th><th>Side</th><th>Entry</th><th>Fee</th><th>Outcome</th><th>Net P&L</th></tr></thead><tbody id="paper"></tbody></table></div></section>
+</div></details>
 </div><p class="footer">The bot never places orders or accesses trading funds. Coinbase spot and CF Benchmarks settlement can differ. Estimated probabilities need validation on future settlements. Data or network failures suppress signals. The scanner and Telegram worker must remain running; this page refreshes every 3 seconds.</p>
 </main><script>
 'use strict';
