@@ -15,3 +15,11 @@ class LocalLaunchTests(unittest.TestCase):
         settings={'TELEGRAM_BOT_TOKEN':'unit-test-token','TELEGRAM_CHAT_ID':'123','DASHBOARD_PASSWORD':'unit-test-password','SCANNER_DB':'/tmp/not-opened-by-test.sqlite3'}
         with patch.dict(os.environ,settings),patch('builtins.input',side_effect=AssertionError('No prompt expected')),patch.object(private_setup.getpass,'getpass',side_effect=AssertionError('No hidden prompt expected')),patch('intelligence.storage.migrate',return_value=Mock()),patch.object(private_setup,'Telegram',return_value=Mock()),patch.object(private_setup.subprocess,'call',return_value=0):
             self.assertEqual(private_setup.main(),0)
+
+    def test_windows_environment_credentials_do_not_prompt_for_cache(self):
+        settings={'TELEGRAM_BOT_TOKEN':'unit-test-token','TELEGRAM_CHAT_ID':'123','DASHBOARD_PASSWORD':'unit-test-password'}
+        # Supply an OS adapter rather than changing global os.name/pathlib behavior.
+        adapter=Mock(name='windows_os',name_override='nt')
+        adapter.name='nt';adapter.environ=os.environ
+        with patch.dict(os.environ,settings),patch.object(private_setup,'os',adapter),patch('intelligence.credentials.load',return_value={}),patch('builtins.input',side_effect=AssertionError('No prompt expected')),patch.object(private_setup.getpass,'getpass',side_effect=AssertionError('No hidden prompt expected')),patch('intelligence.storage.migrate',return_value=Mock()),patch.object(private_setup,'Telegram',return_value=Mock()),patch.object(private_setup.subprocess,'call',return_value=0):
+            self.assertEqual(private_setup.main(),0)

@@ -16,7 +16,7 @@ class WindowsSetupTests(unittest.TestCase):
 
     def test_incomplete_environment_is_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);(root/'.venv').mkdir()
+            root=Path(tmp).resolve();(root/'.venv').mkdir()
             marker=root/'.venv'/'keep-me';marker.write_text('untouched')
             with self.assertRaisesRegex(w.SetupError,'incomplete'):
                 w.prepare(root)
@@ -29,7 +29,7 @@ class WindowsSetupTests(unittest.TestCase):
 
     def test_existing_env_installs_with_its_own_interpreter(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);python=w.environment_python(root/'.venv');python.parent.mkdir(parents=True);python.touch()
+            root=Path(tmp).resolve();python=w.environment_python(root/'.venv');python.parent.mkdir(parents=True);python.touch()
             runner=Mock(return_value=subprocess.CompletedProcess([],0,stdout='3.12\n'))
             with patch.object(w,'checked',runner), patch.object(w.subprocess,'run',return_value=Mock(returncode=0)):
                 self.assertEqual(w.prepare(root),python)
@@ -41,7 +41,7 @@ class WindowsSetupTests(unittest.TestCase):
 
     def test_missing_pip_restores_bundled_ensurepip(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);python=w.environment_python(root/'.venv');python.parent.mkdir(parents=True);python.touch()
+            root=Path(tmp).resolve();python=w.environment_python(root/'.venv');python.parent.mkdir(parents=True);python.touch()
             runner=Mock(return_value=subprocess.CompletedProcess([],0,stdout='3.12\n'))
             with patch.object(w,'checked',runner), patch.object(w.subprocess,'run',return_value=Mock(returncode=1)):
                 w.prepare(root)
@@ -49,14 +49,14 @@ class WindowsSetupTests(unittest.TestCase):
 
     def test_wrong_existing_version_never_installs_dependencies(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);python=w.environment_python(root/'.venv');python.parent.mkdir(parents=True);python.touch()
+            root=Path(tmp).resolve();python=w.environment_python(root/'.venv');python.parent.mkdir(parents=True);python.touch()
             with patch.object(w,'checked',return_value=Mock(stdout='3.11\n')) as runner:
                 with self.assertRaisesRegex(w.SetupError,'different Python version'):w.prepare(root)
                 self.assertEqual(runner.call_count,1)
 
     def test_new_venv_uses_bundled_pip(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp)
+            root=Path(tmp).resolve()
             with patch.object(w.venv,'EnvBuilder') as builder, patch.object(w,'checked',return_value=Mock(stdout='3.12\n')), patch.object(w.subprocess,'run',return_value=Mock(returncode=0)):
                 w.prepare(root)
                 builder.assert_called_once_with(with_pip=True)

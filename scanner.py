@@ -330,38 +330,44 @@ class Store:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute('PRAGMA journal_mode=WAL')
-        self.db.executescript('''
-        CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS predictions(
-          id INTEGER PRIMARY KEY, observed REAL NOT NULL, ticker TEXT, signal TEXT NOT NULL,
-          p_up REAL, payload TEXT NOT NULL, result TEXT);
-        CREATE INDEX IF NOT EXISTS prediction_pending ON predictions(result,ticker);
-        CREATE TABLE IF NOT EXISTS paper(
-          ticker TEXT PRIMARY KEY, prediction_id INTEGER NOT NULL, direction TEXT NOT NULL,
-          quantity INTEGER NOT NULL, entry REAL NOT NULL, fee REAL NOT NULL,
-          opened REAL NOT NULL, result TEXT, pnl REAL, settled REAL);
-        CREATE TABLE IF NOT EXISTS settlements(
-          ticker TEXT PRIMARY KEY,result TEXT NOT NULL,checked REAL NOT NULL,payload TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS alerts(
-          id INTEGER PRIMARY KEY,prediction_id INTEGER UNIQUE NOT NULL,ticker TEXT NOT NULL,
-          created REAL NOT NULL,expires REAL NOT NULL,payload TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
-          next_try REAL NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS outcome_alerts(
-          ticker TEXT PRIMARY KEY,created REAL NOT NULL,message TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
-          next_try REAL NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS alert_state(
-          ticker TEXT PRIMARY KEY, signal TEXT NOT NULL,strength TEXT NOT NULL,p_up REAL,
-          queued REAL NOT NULL);
-        ''')
-        row = self.db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
-        if row and row[0] != mode:
-            raise DataError('Refusing to mix mock and live databases')
-        self.db.execute("INSERT OR IGNORE INTO metadata VALUES('mode',?)", (mode,))
-        self.db.commit()
+        try:
+            self.db.row_factory = sqlite3.Row
+            self.db.execute('PRAGMA journal_mode=WAL')
+            self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS predictions(
+              id INTEGER PRIMARY KEY, observed REAL NOT NULL, ticker TEXT, signal TEXT NOT NULL,
+              p_up REAL, payload TEXT NOT NULL, result TEXT);
+            CREATE INDEX IF NOT EXISTS prediction_pending ON predictions(result,ticker);
+            CREATE TABLE IF NOT EXISTS paper(
+              ticker TEXT PRIMARY KEY, prediction_id INTEGER NOT NULL, direction TEXT NOT NULL,
+              quantity INTEGER NOT NULL, entry REAL NOT NULL, fee REAL NOT NULL,
+              opened REAL NOT NULL, result TEXT, pnl REAL, settled REAL);
+            CREATE TABLE IF NOT EXISTS settlements(
+              ticker TEXT PRIMARY KEY,result TEXT NOT NULL,checked REAL NOT NULL,payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS alerts(
+              id INTEGER PRIMARY KEY,prediction_id INTEGER UNIQUE NOT NULL,ticker TEXT NOT NULL,
+              created REAL NOT NULL,expires REAL NOT NULL,payload TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
+              next_try REAL NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS outcome_alerts(
+              ticker TEXT PRIMARY KEY,created REAL NOT NULL,message TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
+              next_try REAL NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS alert_state(
+              ticker TEXT PRIMARY KEY, signal TEXT NOT NULL,strength TEXT NOT NULL,p_up REAL,
+              queued REAL NOT NULL);
+            ''')
+            row = self.db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
+            if row and row[0] != mode:
+                raise DataError('Refusing to mix mock and live databases')
+            self.db.execute("INSERT OR IGNORE INTO metadata VALUES('mode',?)", (mode,))
+            self.db.commit()
+        except BaseException:
+            # A rejected/failed constructor still owns an open SQLite handle.
+            # Windows cannot remove or restore that DB until it is closed.
+            self.db.close()
+            raise
 
     def record(self, p, config, alerts=False):
         now = p['observed_at']

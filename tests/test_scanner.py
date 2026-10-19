@@ -88,7 +88,21 @@ class ScannerTests(Fixture, unittest.TestCase):
         self.assertEqual(self.store.report()['actionable_signal_accuracy'],0)
 
     def test_mock_cannot_mix_database_modes(self):
-        with self.assertRaises(s.DataError): s.Store(Path(self.temp.name)/'test.sqlite3','mock')
+        original=s.sqlite3.connect
+        opened=[]
+        def capture(*args,**kwargs):
+            db=original(*args,**kwargs);opened.append(db);return db
+        with patch.object(s.sqlite3,'connect',side_effect=capture):
+            with self.assertRaises(s.DataError): s.Store(Path(self.temp.name)/'test.sqlite3','mock')
+        self.assertEqual(len(opened),1)
+        with self.assertRaises(s.sqlite3.ProgrammingError):opened[0].execute('SELECT 1')
+
+    def test_failed_database_initialization_closes_connection(self):
+        connection=Mock();connection.execute.side_effect=s.sqlite3.OperationalError('fixture initialization failure')
+        with patch.object(s.sqlite3,'connect',return_value=connection):
+            with self.assertRaisesRegex(s.sqlite3.OperationalError,'fixture initialization failure'):
+                s.Store(Path(self.temp.name)/'failed.sqlite3')
+        connection.close.assert_called_once()
 
     def test_no_live_fallback_on_network_failure(self):
         e=s.Engine(self.store,self.config)

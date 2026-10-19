@@ -165,7 +165,7 @@ class SettingsAPITests(Base):
 
 class InPlaceUpdaterTests(unittest.TestCase):
     def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.base=Path(self.tmp.name);self.source=self.base/'new';self.target=self.base/'installed'
+        self.tmp=tempfile.TemporaryDirectory();self.base=Path(self.tmp.name).resolve();self.source=self.base/'new';self.target=self.base/'installed'
         self.source.mkdir();self.target.mkdir();(self.target/'data').mkdir();(self.target/'.venv').mkdir()
         (self.target/'.venv'/'keep').write_bytes(b'private-venv');(self.target/'data'/'credentials.dpapi').write_bytes(b'encrypted-secret-unchanged')
         (self.target/'data'/'research.csv').write_bytes(b'actual research history')
