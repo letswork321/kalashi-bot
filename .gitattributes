@@ -1,2 +1,5 @@
-# Keep batch files as CRLF in source ZIPs and allow their line endings in checks.
+# Release checksums must refer to identical bytes on Linux and Windows.
+* text=auto eol=lf
+# Preserve the checked-in CRLF batch launchers byte-for-byte.
 *.cmd -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+*.png -text

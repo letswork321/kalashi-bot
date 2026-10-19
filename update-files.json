@@ -1,6 +1,7 @@
 {
-  ".gitattributes": "b273c0c06fce34dd1ccaf8a439720f9cae48b65ce431d74285e4fb1b2b303910",
-  ".github/workflows/v3-tests.yml": "3066a33d705617fa92cad6d41709a409b91f4cb5ec607fe9133b260403905c6c",
+  ".gitattributes": "26a2d3aaf63d45893607a66ae2b8bb41a46a6cc76ab99c14abc702f3d5681db6",
+  ".github/scripts/run_tests.py": "1e18ab53cdef29233ce038303252c16efa8ba5743586c90d94bf4cf1ea3a3683",
+  ".github/workflows/v3-tests.yml": "dc0ab53c8217bac238d06656ac721de89a1c01123d58194089ab5cf996cd6b8e",
   ".gitignore": "8b66790f8a4275d02616f581385413101a78019a2ffc60e3cf21591a19004082",
   ".python-version": "f50159fad3f4319868eb38717b91d55843c41e9803014c8de05e116a6d0bcfdc",
   "ANALYTICS.md": "45772db594d256cf3e4d56e475cfab432dc5262ea9c48022fbc3767494ceae7c",
@@ -44,8 +45,7 @@
   "intelligence/v3_dashboard.py": "51d2c1d3dcc01f1dc456ca55fd3f1f5f8f5f8256972d799d44fc58ff3c8919f7",
   "intelligence/v3_runtime.py": "0dc54af4d080990d757472035b2be21489b8d5a2a6fcc33ae03d80e1af38bdae",
   "intelligence/v3_storage.py": "023d3a171cfa5df622415a1d621d9df3a291879c4b397e73da513c85fd7edbaf",
-  "main.py.": "efd604fda578cb263af06ebe1e396fd04ba789e97c92af0e7ba50b306d061d0e",
-  "private_setup.py": "9e4fe0836ffd30a5aa2fdc9c25d578fca14a48b78e933fc7e0e701413be0a654",
+  "private_setup.py": "d3fef64ef39e21532d07edd3261937cf74410fc56bdc2a7d3aa8cf5aa7e5e710",
   "references/OFFICIAL-DATA-CONTRACTS.md": "b5427e48197614b2d6a7594b737f55c29e86dff6b72dc7d692567e5e6a834d2d",
   "references/dashboard-preview.png": "5128fc0ea317a8c490d25b85aeb78c48c49e283b9d3b86614332ea4c53f9255f",
   "references/v3-real-rest-dashboard.png": "9c8136e6dcd6aade68e049976a6b021f1f4febfe9b8152eb28a6c9329928d003",
@@ -81,9 +81,9 @@
   "tests/test_intel_windows_runner.py": "5caf58b03b0c064b32638598c381b9adaaac33f85583b85dee8aba90fc47337d",
   "tests/test_scanner.py": "8dc085324dae7e5b1bc50e3810e4ec5768e3dec078d171dd522d4874aa763162",
   "tests/test_v3.py": "f670247ce477eda47d15fc7597cab8eee8a7bee21f0a657fcf900629cbef65e6",
-  "tests/test_windows_setup.py": "db4a8d19385ad05ab6cfd35f4e433a17c5f9de96b652d1b09d2093f4edc61c7e",
+  "tests/test_windows_setup.py": "73600bde675acfadcaecdb51dfa782baa73f451911f49d61867da34c38ab1f5a",
   "update-windows.cmd": "f60ae62c0000fa4435c9cd0737fe22332bc9e4b5196d6e36b4ac90f16d5cb27a",
   "upgrade-windows.cmd": "7f95fba8ad12369f5e0c67930b676450da187515dba7c896f71a18d812facc24",
   "windows_runner.py": "a30cac07ad702af06c020bd200d5c51f9328053ea0dae68cb3bef5b7fffdb932",
-  "windows_setup.py": "d12d5d83b82d519832e6eefc84fdab3fe7c91e1498111a60d1b2bc42742b3ca9"
+  "windows_setup.py": "e8f2aba958669e881acb60e3db82a62b438ce6318a4754385ac9370adf2a2546"
 }

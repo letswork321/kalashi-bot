@@ -16,12 +16,13 @@ def main():
     if os.name=='nt':
         try:remembered=load(cache)
         except CredentialError as exc:print(str(exc))
+    supplied_by_environment=all(os.environ.get(name) for name in ('TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','DASHBOARD_PASSWORD'))
     token=os.environ.get('TELEGRAM_BOT_TOKEN') or remembered.get('TELEGRAM_BOT_TOKEN') or getpass.getpass('Paste your BotFather token (hidden): ').strip()
     chat=os.environ.get('TELEGRAM_CHAT_ID') or remembered.get('TELEGRAM_CHAT_ID') or input('Enter your verified Telegram chat ID: ').strip()
     password=os.environ.get('DASHBOARD_PASSWORD') or remembered.get('DASHBOARD_PASSWORD') or getpass.getpass('Dashboard password (hidden; existing password may be reused): ')
     if not token or not chat or len(password)<12:
         print('Token/chat ID required; dashboard password must be at least 12 characters.');return 1
-    remember = os.name=='nt' and not remembered and input('Remember credentials encrypted for this Windows user? [y/N]: ').strip().lower()=='y'
+    remember = os.name=='nt' and not supplied_by_environment and not remembered and input('Remember credentials encrypted for this Windows user? [y/N]: ').strip().lower()=='y'
     os.environ['TELEGRAM_BOT_TOKEN']=token
     os.environ['TELEGRAM_CHAT_ID']=chat
     os.environ['DASHBOARD_PASSWORD']=password

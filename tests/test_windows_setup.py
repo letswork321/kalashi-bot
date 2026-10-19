@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PureWindowsPath, PurePosixPath
 import subprocess
 import tempfile
 import unittest
@@ -7,11 +7,12 @@ import windows_setup as w
 
 class WindowsSetupTests(unittest.TestCase):
     def test_platform_python_paths(self):
-        directory=Path('project-env')
-        with patch.object(w.os,'name','nt'):
-            self.assertEqual(str(w.environment_python(directory)),str(directory/'Scripts/python.exe'))
-        with patch.object(w.os,'name','posix'):
-            self.assertEqual(w.environment_python(directory),directory/'bin/python')
+        windows=PureWindowsPath('C:/Users/Test User/project-env')
+        posix=PurePosixPath('/tmp/project env')
+        self.assertEqual(w.environment_python(windows, 'nt'),windows/'Scripts/python.exe')
+        self.assertEqual(w.environment_python(posix, 'posix'),posix/'bin/python')
+        self.assertEqual(w.environment_python(Path('project-env')),
+                         Path('project-env')/('Scripts/python.exe' if w.os.name=='nt' else 'bin/python'))
 
     def test_incomplete_environment_is_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:

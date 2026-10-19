@@ -10,8 +10,10 @@ ROOT = Path(__file__).resolve().parent
 class SetupError(Exception):
     pass
 
-def environment_python(directory):
-    return directory / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+def environment_python(directory, platform=None):
+    """Join using the supplied path flavor; do not mutate global os.name."""
+    platform = os.name if platform is None else platform
+    return directory / ('Scripts/python.exe' if platform == 'nt' else 'bin/python')
 
 def checked(args, **kwargs):
     result = subprocess.run([str(arg) for arg in args], **kwargs)
