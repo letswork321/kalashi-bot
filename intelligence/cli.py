@@ -9,7 +9,7 @@ from .research import Backfill,report
 def main(argv=None):
     from scanner import HTTP,ROOT
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['backfill','backfill-trades','train','report','run'])
+    p.add_argument('action',choices=['backfill','backfill-trades','train','report','run','compare-models','v3-report'])
     p.add_argument('--db',type=Path,default=ROOT/'data'/'live.sqlite3')
     p.add_argument('--days',type=int,choices=[7,30,90],default=7)
     p.add_argument('--max-pages',type=int,default=10)
@@ -24,7 +24,13 @@ def main(argv=None):
         print(dumps({'error':worker.error,'database':str(a.db),'telegram':False}));return 1 if worker.error else 0
     db=migrate(a.db)
     try:
-        result=Backfill(db,HTTP()).trade_session(a.max_pages) if a.action=='backfill-trades' else Backfill(db,HTTP()).run(a.days,a.max_pages) if a.action=='backfill' else retrain(db,time.time()) if a.action=='train' else report(db,a.days)
+        if a.action=='compare-models':
+            from .boosted_models import retrain_comparison
+            retrain_comparison(db,time.time());result={'status':'Shadow comparison saved; not promoted'}
+        elif a.action=='v3-report':
+            from .v3_dashboard import snapshot
+            result=snapshot(db)
+        else:result=Backfill(db,HTTP()).trade_session(a.max_pages) if a.action=='backfill-trades' else Backfill(db,HTTP()).run(a.days,a.max_pages) if a.action=='backfill' else retrain(db,time.time()) if a.action=='train' else report(db,a.days)
         print(dumps(result));return 1 if result.get('status')=='FAILED' else 0
     finally:db.close()
 if __name__=='__main__':raise SystemExit(main())

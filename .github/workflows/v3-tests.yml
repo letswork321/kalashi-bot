@@ -1,21 +1,44 @@
 name: BTC Pro V3 Tests
 on:
   push:
-    branches:
-      - btc-pro-v3-live-chart-callouts
+    branches: [btc-pro-v3-live-chart-callouts]
   workflow_dispatch:
 jobs:
   python-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - name: Install runtime requirements
+          python-version: '3.12.10'
+      - name: Install pinned runtime requirements
         run: python -m pip install -r requirements.txt
-      - name: Compile Python sources
-        run: python -m compileall -q intelligence scanner.py dashboard.py windows_setup.py
-      - name: Run unit tests without real trading
+      - name: Compile all application modules
+        run: python -m compileall -q intelligence scanner.py dashboard.py windows_setup.py windows_runner.py inplace_update.py
+      - name: Check all JavaScript syntax
+        run: node --check static/pro.js && node --check static/intelligence.js && node --check static/alerts.js
+      - name: Run unit, migration and safety tests
         run: python -m unittest discover -s tests -v
+      - name: Verify actual NuGet Python 3.12.10 bootstrap on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $uri = 'https://api.nuget.org/v3-flatcontainer/python/3.12.10/python.3.12.10.nupkg'
+          $archive = Join-Path $env:RUNNER_TEMP 'python.3.12.10.zip'
+          Invoke-WebRequest $uri -OutFile $archive
+          # SHA512 published in NuGet catalog python/3.12.10 (2025-04-08).
+          $expected = 'u9pNz2iKlCEbYtUJaKkbOPMF0LjR7NkCafdKhvigpPzrt8oWKgdTpHaR6z3wyWQAm9PYGUxv0Zr66NX9AeHMDw=='
+          $digest = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($archive)))
+          if ($digest -ne $expected) { throw 'NuGet SHA512 integrity check failed' }
+          $destination = Join-Path $env:USERPROFILE 'Downloads\python.3.12.10'
+          Expand-Archive $archive -DestinationPath $destination
+          $pythonExe = Join-Path $destination 'tools\python.exe'
+          & $pythonExe windows_setup.py --setup-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & '.\.venv\Scripts\python.exe' -m unittest discover -s tests -q
+          exit $LASTEXITCODE

@@ -83,12 +83,14 @@ def migrate(path):
         if mode and mode['value']=='mock':
             db.close();raise ValueError('Intelligence refuses to mix genuine collection with the mock database')
     exists=db.execute("SELECT 1 FROM sqlite_master WHERE name='intel_schema'").fetchone()
-    if exists and db.execute('SELECT 1 FROM intel_schema WHERE version=7').fetchone():return db
+    if exists and db.execute('SELECT 1 FROM intel_schema WHERE version=9').fetchone():return db
     # No migration writes until a complete online backup of pre-existing history exists.
     tables=db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     saved=backup_database(path) if tables else None
     try:
-        db.executescript('BEGIN IMMEDIATE;\n'+SCHEMA)
+        from .callouts import SCHEMA as CALL_SCHEMA
+        from .v3_storage import SCHEMA as V3_SCHEMA
+        db.executescript('BEGIN IMMEDIATE;\n'+SCHEMA+CALL_SCHEMA+V3_SCHEMA)
         if 'settled_at' not in {r['name'] for r in db.execute('PRAGMA table_info(intel_markets)')}:
             db.execute('ALTER TABLE intel_markets ADD COLUMN settled_at REAL')
         columns=list(db.execute('PRAGMA table_info(intel_books)'))
@@ -106,7 +108,10 @@ def migrate(path):
                 db.execute('ALTER TABLE intel_locks ADD COLUMN '+column+' REAL')
         db.execute('DROP TRIGGER IF EXISTS immutable_locked_forecast')
         db.execute("CREATE TRIGGER immutable_locked_forecast BEFORE UPDATE OF direction,p_up,observed,features,model,state,scheduled,deadline,strike,btc_price ON intel_locks WHEN OLD.state IN ('LOCKED','MISSED') BEGIN SELECT RAISE(ABORT,'Forecast decision is immutable'); END;")
-        db.execute('INSERT OR IGNORE INTO intel_schema VALUES(7,?,?)',(time.time(),saved))
+        for name,definition in [('metric',"TEXT NOT NULL DEFAULT 'endpoint-v1'"),('target_price','REAL'),('source',"TEXT NOT NULL DEFAULT 'Coinbase REST'"),('version',"TEXT NOT NULL DEFAULT 'caller-prototype-v1'")]:
+            if name not in {r['name'] for r in db.execute('PRAGMA table_info(intel_callouts)')}:db.execute('ALTER TABLE intel_callouts ADD COLUMN '+name+' '+definition)
+        db.execute("CREATE TRIGGER IF NOT EXISTS ico_v3_immutable BEFORE UPDATE OF metric,target_price,source,version ON intel_callouts BEGIN SELECT RAISE(ABORT,'Callout metric cannot be rewritten'); END;")
+        db.execute('INSERT OR IGNORE INTO intel_schema VALUES(9,?,?)',(time.time(),saved))
         db.commit()
     except Exception:db.rollback();db.close();raise
     return db
@@ -147,15 +152,15 @@ def tracker_summary(db,selection='today',now=None,offset=0,limit=100):
         streak+=1
     return {'late':{'count':len(late_rows),'wins':late_wins,'losses':len(late_settled)-late_wins,'pending':len(late_rows)-len(late_settled),'accuracy':late_wins/len(late_settled) if late_settled else None},'attempts':attempts,'range':selection,'wins':wins,'losses':len(settled)-wins,'accuracy':wins/len(settled) if settled else None,'streak':{'kind':'WIN' if last else 'LOSS' if last is not None else 'NONE','count':streak},'pending':sum(r['state']=='LOCKED' and not r['result'] for r in rows),'missed':sum(r['state']=='MISSED' for r in rows),'awaiting_lock':sum(r['state']=='PENDING' for r in rows),'sample_size':len(settled),'rows':rows[offset:offset+limit],'total_rows':len(rows),'offset':offset,'page_size':limit,'has_next':len(rows)>offset+limit,'coverage':'Only discovered eligible markets; historical discoveries without an on-time observation are MISSED, never reconstructed.'}
 
-def register_market(db,m,seen):
+def register_market(db,m,seen,track=True):
     from scanner import timestamp
     op,cl=timestamp(m['open_time']),timestamp(m['close_time'])
     if not m['ticker'].startswith('KXBTC15M-') or not 899<=cl-op<=901:return False
     result=m.get('result') if m.get('status') in ('finalized','settled') and m.get('result') in ('yes','no') else None
     with db:
         db.execute('INSERT INTO intel_markets VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(ticker) DO UPDATE SET strike=excluded.strike,result=COALESCE(excluded.result,intel_markets.result),status=excluded.status,payload=excluded.payload,seen=excluded.seen,settled_at=COALESCE(intel_markets.settled_at,excluded.settled_at)',(m['ticker'],op,cl,m.get('floor_strike'),result,m.get('status'),dumps(m),seen,timestamp(m['settlement_ts']) if result and m.get('settlement_ts') else seen if result else None))
-        db.execute('INSERT OR IGNORE INTO intel_locks(ticker,scheduled,deadline,state,reason) VALUES(?,?,?,?,?)',(m['ticker'],op+60,op+65,'MISSED' if seen>op+65 else 'PENDING','Discovered after locking deadline' if seen>op+65 else 'Waiting for +60s lock'))
-        db.execute('INSERT OR IGNORE INTO intel_reversals(ticker,target,state,reason) VALUES(?,?,?,?)',(m['ticker'],op+600,'MISSED' if seen>op+603 else 'PENDING','10-minute observation unavailable' if seen>op+603 else 'Waiting for 10-minute sample'))
+        if track:db.execute('INSERT OR IGNORE INTO intel_locks(ticker,scheduled,deadline,state,reason) VALUES(?,?,?,?,?)',(m['ticker'],op+60,op+65,'MISSED' if seen>op+65 else 'PENDING','Discovered after locking deadline' if seen>op+65 else 'Waiting for +60s lock'))
+        if track:db.execute('INSERT OR IGNORE INTO intel_reversals(ticker,target,state,reason) VALUES(?,?,?,?)',(m['ticker'],op+600,'MISSED' if seen>op+603 else 'PENDING','10-minute observation unavailable' if seen>op+603 else 'Waiting for 10-minute sample'))
         if result:
             db.execute('UPDATE intel_locks SET result=? WHERE ticker=?',(result,m['ticker']))
             db.execute('UPDATE intel_late_locks SET result=? WHERE ticker=?',(result,m['ticker']))

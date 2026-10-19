@@ -134,6 +134,20 @@ class Simulator:
                     if needed<=1e-9:break
         for p in positions:
             entry=p['state']=='PENDING_ENTRY';due=p['entry_due'] if entry else p['exit_due']
+            if not entry and due is None and p['strategy']=='v3_early_exit':
+                rule=self.db.execute('SELECT * FROM v3_paper_rules WHERE sim_id=?',(p['id'],)).fetchone()
+                if rule and s.get('book_event_verified') and s.get('fee_valid') and 0<=now-s.get('book_ts',0)<=1:
+                    try:
+                        observed=executable(remaining_book,p['side'],'sell',p['quantity']);f=fee(observed,p['quantity'],.07,s['fee_multiplier'])
+                        net=p['quantity']*(observed-p['entry'])-p['entry_fee']-f;roi=net/(p['quantity']*p['entry']+p['entry_fee'])
+                        opposite=s.get('caller_direction') in ('UP','DOWN') and s['caller_direction']!=p['side'] and now-p['entry_ts']>=5
+                        reason='net goal reached' if roi>=rule['target_roi'] else 'net risk limit reached' if roi<=rule['stop_roi'] else 'trend deteriorated' if opposite else 'settlement averaging window approaching' if s['market']['closed']-now<90 else None
+                        if reason:
+                            with self.db:
+                                self.db.execute('UPDATE intel_sim SET exit_due=?,reason=? WHERE id=?',(now+2,'V3 paper exit decision: '+reason+'; observed bid required after2s',p['id']))
+                                self.db.execute('UPDATE v3_paper_rules SET exit_decision=?,exit_reason=? WHERE sim_id=?',(now,reason,p['id']))
+                    except ValueError:pass
+                continue
             if due is None or now<due:continue
             if now>due+3:
                 with self.db:self.db.execute('UPDATE intel_sim SET state=?,reason=? WHERE id=?',('CANCELLED' if entry else 'MISSED_EXIT','Executable timed observation missed; no fill fabricated',p['id']))

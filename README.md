@@ -1,3 +1,7 @@
+# BTC Pro V3 release
+
+Start with [safe V3 Windows update](V3-WINDOWS.md), [all 26 implementation areas](V3-IMPLEMENTATION.md), and [verified results and limitations](V3-VERIFICATION.md). Existing history and manual-only trading are preserved. Live streaming and validated profitability are not implied by this release.
+
 # Kalshi BTC 15-minute intelligence dashboard
 
 Private Chrome dashboard + Telegram; Python 3.12 / Flask / Waitress / SQLite. **No automatic trades, account access, balance queries or fund controls.** Public Kalshi/Coinbase data only; optional market-data WebSocket is off by default.

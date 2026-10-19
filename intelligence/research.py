@@ -20,7 +20,7 @@ class Backfill:
                 data=self.http.get(KALSHI,'/markets',{'series_ticker':'KXBTC15M','status':'settled','limit':200,'min_close_ts':int(start),'max_close_ts':int(now),'cursor':cursor})
                 markets=data.get('markets',[])
                 for m in markets:
-                    if register_market(self.db,m,now):count+=1
+                    if register_market(self.db,m,now,track=False):count+=1
                 cursor=data.get('cursor','')
                 if not cursor:finished=True;break
             if not finished:partial.append('Kalshi pagination capped; rerun with larger --max-pages')
@@ -35,7 +35,7 @@ class Backfill:
                     markets=data.get('markets',[])
                     for m in markets:
                         if start<=timestamp(m['close_time'])<=now:
-                            if register_market(self.db,m,now):count+=1
+                            if register_market(self.db,m,now,track=False):count+=1
                     cursor=data.get('cursor','')
                     if not cursor:
                         historical_done=True;break

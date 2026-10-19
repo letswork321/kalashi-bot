@@ -153,6 +153,91 @@ def alert_settings():
     except sqlite3.Error:return jsonify({'error':'Settings database busy or unavailable; retry'}),503
     finally:db.close()
 
+
+# V3 uses short local polling; socket credentials never cross this boundary.
+_v3_chart_cache={}
+_v3_chart_lock=threading.Lock()
+
+def _v3_write_guard():
+    if not request.is_json or not hmac.compare_digest(request.headers.get('X-Alert-CSRF','').encode(),_alert_csrf.encode()):
+        return jsonify({'error':'Reload settings; valid CSRF token required'}),403
+    origin=request.headers.get('Origin')
+    if origin and origin.rstrip('/')!=request.host_url.rstrip('/'):
+        return jsonify({'error':'Same-origin requests only'}),403
+
+def _v3_db():
+    from intelligence.storage import connect
+    if not DB.is_file():raise sqlite3.OperationalError('Scanner initializing')
+    db=connect(DB,True)
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='v3_state'").fetchone():db.close();raise sqlite3.OperationalError('V3 migration initializing')
+    return db
+
+@app.get('/api/v3/state')
+def v3_state():
+    db=None
+    try:
+        from intelligence.v3_dashboard import snapshot as pro_snapshot
+        db=_v3_db();return jsonify(pro_snapshot(db))
+    except (sqlite3.Error,ValueError,KeyError):return jsonify({'status':'WARMING UP','caller':{'guidance':'WAIT','reason':'Start the upgraded scanner; data collection/migration initializing'}})
+    finally:
+        if db:db.close()
+
+@app.get('/api/v3/chart')
+def v3_chart():
+    from intelligence.chart_data import PERIODS,history,payload
+    timeframe=request.args.get('timeframe','1m')
+    if timeframe not in PERIODS:return jsonify({'error':'Use1m,5m,15m (15s only with verified live tick coverage)'}),400
+    db=None
+    try:
+        db=_v3_db();now=time.time();key=(str(DB),timeframe)
+        with _v3_chart_lock:
+            cached=_v3_chart_cache.get(key)
+            if not cached or now-cached[0]>5:cached=(now,history(db,PERIODS[timeframe],now));_v3_chart_cache[key]=cached
+        return jsonify(payload(db,timeframe,now,cached[1]))
+    except (sqlite3.Error,ValueError,KeyError):return jsonify({'status':'WARMING UP','candles':[],'indicators':{},'reason':'V3 chart collector initializing'})
+    finally:
+        if db:db.close()
+
+@app.route('/api/v3/settings',methods=['GET','POST'])
+def v3_settings():
+    from intelligence.early_exit import settings,set_target
+    from intelligence.storage import connect
+    if request.method=='POST':
+        guard=_v3_write_guard()
+        if guard:return guard
+    db=None
+    try:
+        check=_v3_db();check.close();db=connect(DB)
+        if request.method=='POST':
+            values=request.get_json(silent=True)
+            if not isinstance(values,dict) or set(values)!={'target_roi'}:raise ValueError('Only target_roi can be changed here')
+            out=set_target(db,values['target_roi'],time.time())
+        else:out=settings(db)
+        return jsonify({'settings':out,'csrf':_alert_csrf})
+    except ValueError as exc:return jsonify({'error':str(exc)}),400
+    except sqlite3.Error:return jsonify({'error':'V3 schema not ready'}),409
+    finally:
+        if db:db.close()
+
+@app.post('/api/v3/watch')
+def v3_watch():
+    guard=_v3_write_guard()
+    if guard:return guard
+    from intelligence.early_exit import add_watch
+    from intelligence.storage import connect
+    db=None
+    try:
+        check=_v3_db();check.close();db=connect(DB);values=request.get_json(silent=True)
+        if isinstance(values,dict) and set(values)=={'close_id'}:
+            if type(values['close_id']) is not int or values['close_id']<=0:raise ValueError('Invalid watch id')
+            with db:db.execute("UPDATE v3_watch_positions SET state='CLOSED_BY_USER' WHERE id=?",(values['close_id'],))
+            return jsonify({'status':'Watch ended; no real position was changed'})
+        identifier=add_watch(db,values,time.time());return jsonify({'id':identifier,'status':'USER-SUPPLIED WATCH BASIS ONLY; no orders placed'})
+    except ValueError as exc:return jsonify({'error':str(exc)}),400
+    except sqlite3.Error:return jsonify({'error':'V3 schema not ready'}),409
+    finally:
+        if db:db.close()
+
 if __name__ == '__main__':
     # Local testing only; production uses gunicorn in start.sh.
     app.run(host='127.0.0.1',port=8000,debug=False)

@@ -10,14 +10,14 @@ from .indicators import tick_metrics,InsufficientData,covered
 
 class Collector:
     def __init__(self,db,stream=None):
-        self.db=db;self.http=HTTP();self.k=Kalshi(self.http);self.stream=stream
+        self.db=db;self.http=HTTP();self.k=Kalshi(self.http);self.stream=stream;self.spot_stream=None
         self.times={};self.market=None;self.multiplier=None;self.fee_valid=False;self.errors={};self.next_market=None;self.previous_bid={}
     def due(self,name,seconds,now):return now-self.times.get(name,0)>=seconds
     def health(self,name,ok,reason,now):
         with self.db:self.db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',(name,now,dumps({'ok':ok,'reason':reason})))
     def discovery(self,now):
         data=self.http.get(KALSHI,'/markets',{'series_ticker':'KXBTC15M','limit':200,'min_close_ts':int(now-3600),'max_close_ts':int(now+3600)})
-        for m in data.get('markets',[]):register_market(self.db,m,now)
+        for m in data.get('markets',[]):register_market(self.db,m,now,track=timestamp(m['close_time'])>now)
         rows=self.db.execute('SELECT * FROM intel_markets WHERE opened<=? AND closed>? AND status IN (\'active\',\'open\') ORDER BY closed LIMIT 1',(now,now)).fetchall()
         self.market=loads(rows[0]['payload']) if rows else None
         nxt=self.db.execute('SELECT * FROM intel_markets WHERE opened>? ORDER BY opened LIMIT 1',(now,)).fetchone()
@@ -95,20 +95,25 @@ class Collector:
         book=None;book_ts=0;source='REST';latency=99;seq=False
         if self.stream:
             self.stream.set_market(m['ticker']);ws=self.stream.snapshot()
-            if ws and ws['ticker']==m['ticker'] and now-ws['received']<=1 and ws['latency']<=1:
+            if ws and ws['ticker']==m['ticker'] and now-ws['received']<=1 and ws['latency']<=1 and ws.get('event_ts') is not None and 0<=now-ws['event_ts']<=1:
                 try:
-                    book=Book.parse({'yes_dollars':ws['yes'],'no_dollars':ws['no']});book_ts=ws['received'];latency=ws['latency'];source='websocket';seq=True
+                    book=Book.parse({'yes_dollars':ws['yes'],'no_dollars':ws['no']});book_ts=ws['event_ts'];latency=ws['latency'];source='websocket';seq=True
                 except (ValueError,DataError):pass
         if not book:
             t=time.time()
             try:book=self.k.book(m['ticker']);book_ts=time.time();latency=book_ts-t
             except Exception as exc:self.health('orderbook',False,str(exc),time.time())
         # Sample ticker last, immediately before scheduled observation decisions.
-        tick=self.http.get(COINBASE,'/products/BTC-USD/ticker')
-        quote_ts=timestamp(tick['time']);price=float(tick['price']);now=time.time()
+        live_spot=self.spot_stream.snapshot(time.time()) if self.spot_stream else None
+        if live_spot and live_spot['status']=='LIVE':
+            quote_ts=live_spot['event_ts'];price=live_spot['price'];now=time.time()
+        else:
+            tick=self.http.get(COINBASE,'/products/BTC-USD/ticker')
+            quote_ts=timestamp(tick['time']);price=float(tick['price']);now=time.time()
         if not math.isfinite(price) or price<=0:raise ValueError('Invalid live BTC quote')
         candles=[dict(r) for r in self.db.execute("SELECT ts,low,high,open,close,volume FROM intel_candles WHERE source='coinbase' AND period=900 AND ts+900<=? ORDER BY ts DESC LIMIT 280",(now,))][::-1]
         trades=[dict(r) for r in self.db.execute('SELECT id,ts,price,size FROM intel_btc_trades WHERE ts>=? AND ts<=? ORDER BY ts,id',(now-120,now))]
+        if live_spot and live_spot['status']=='LIVE':trades=[r for r in live_spot['rows'] if now-120<=r['ts']<=now]
         one=[list(r) for r in self.db.execute("SELECT ts,low,high,open,close,volume FROM intel_candles WHERE period=60 AND ts+60<=? ORDER BY ts DESC LIMIT 180",(now,))][::-1]
         five=[dict(r) for r in self.db.execute("SELECT ts,low,high,open,close,volume FROM intel_candles WHERE source='coinbase' AND period=300 AND ts+300<=? ORDER BY ts DESC LIMIT 180",(now,))][::-1]
         one_named=[dict(zip(('ts','low','high','open','close','volume'),r)) for r in one]

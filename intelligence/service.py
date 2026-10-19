@@ -18,7 +18,7 @@ from . import callouts
 
 class IntelligenceWorker:
     def __init__(self,path,telegram=None):
-        self.path=Path(path);self.telegram=telegram;self.stop=threading.Event();self.thread=None;self.maintenance=None;self.stream=OptionalStream();self.error=None;self.scheduler=None;self.dispatcher=None;self.latest_snapshot=None;self.observer=None
+        self.path=Path(path);self.telegram=telegram;self.stop=threading.Event();self.thread=None;self.maintenance=None;self.stream=OptionalStream();self.error=None;self.scheduler=None;self.dispatcher=None;self.latest_snapshot=None;self.observer=None;self.v3=None;self.raw_snapshot=None
     def start(self):
         self.thread=threading.Thread(target=self.run,name='intelligence-collector',daemon=True);self.thread.start()
     def close(self):
@@ -58,8 +58,8 @@ class IntelligenceWorker:
                             self.stop.wait(.2);continue
                         fast.update(fee_valid=True,fee_multiplier=s['fee_multiplier']);s=fast
                         ws=self.stream.snapshot()
-                        if ws and ws['ticker']==s['market']['ticker'] and 0<=now-ws['received']<=1 and ws['latency']<=1:
-                            s.update(book=Book.parse({'yes_dollars':ws['yes'],'no_dollars':ws['no']}),book_ts=ws['received'],book_latency=ws['latency'],book_source='websocket',ws_sequence_valid=True,book_history=ws['history'])
+                        if ws and ws['ticker']==s['market']['ticker'] and 0<=now-ws['received']<=1 and ws['latency']<=1 and ws.get('event_ts') is not None and 0<=now-ws['event_ts']<=1:
+                            s.update(book=Book.parse({'yes_dollars':ws['yes'],'no_dollars':ws['no']}),book_ts=ws['event_ts'],book_latency=ws['latency'],book_source='websocket',ws_sequence_valid=True,book_history=ws['history'])
                         key=(s['market']['ticker'],s['book_ts'],s['book_source'])
                         if key!=last_book:
                             b=s['book']
@@ -94,6 +94,9 @@ class IntelligenceWorker:
                     last_model=db.execute('SELECT report FROM intel_models ORDER BY created DESC LIMIT 1').fetchone()
                     prior=loads(last_model['report']).get('dataset_total',loads(last_model['report']).get('training_markets',0)) if last_model else 0
                     if n>=100 and n-prior>=10:retrain(db,now)
+                    if n>=100:
+                        from .boosted_models import retrain_comparison
+                        retrain_comparison(db,now)
                     last=now
                 self.stop.wait(15)
         except Exception as exc:
@@ -118,6 +121,8 @@ class IntelligenceWorker:
             self.scheduler=ForecastScheduler(self.path,self.telegram);self.scheduler.start()
             self.dispatcher=threading.Thread(target=self.dispatch_alerts,daemon=True,name='telegram-dispatcher');self.dispatcher.start()
             self.observer=threading.Thread(target=self.observe_execution,daemon=True,name='execution-quote-observer');self.observer.start()
+            from .v3_runtime import V3Runtime
+            self.v3=V3Runtime(self);collector.spot_stream=self.v3.spot;self.v3.start()
             self.maintenance=threading.Thread(target=self.background_research,daemon=True,name='research-model-worker');self.maintenance.start()
             last_settle=last_retention=0;daily=None;radar_last={}
             with ThreadPoolExecutor(max_workers=3,thread_name_prefix='strategy') as pool:
@@ -162,8 +167,10 @@ class IntelligenceWorker:
                                             db.execute('INSERT INTO intel_flip_followups(radar_id,ticker,side,signal_ts,entry_due,target,signal) VALUES(?,?,?,?,?,?,?)',(rid,s['market']['ticker'],rr['side'],s['now'],s['now']+2,rr['possible_exit_target'],rr['status']))
                                     radar_last[radar_key]=(rr['status'],s['now'])
                                 if rr['status'] in states and (kind!='scalp' or rr.get('research_candidate')):sim.propose(f"{kind}:{s['market']['ticker']}:{rr['side']}:{int(s['now']//60)}:{rr.get('window',60)}",kind,kind,s,rr['side'],rr.get('window',60))
-                        self.latest_snapshot=s
-                        notify.signals(s,engines,flips,scalps);notify.directional(s,fv,candidate);notify.callout(s,active_callout)
+                        s['v3_active']=bool(self.v3)
+                        self.raw_snapshot=s
+                        if not self.v3:self.latest_snapshot=s
+                        notify.signals(s,engines,flips,scalps);notify.directional(s,fv,candidate)
                         nxt=s.get('next_market')
                         outlook={'status':'PRELIMINARY — NOT LOCKED','ticker':nxt['ticker'] if nxt else None,'strike':nxt.get('strike') if nxt else None,'direction':'UP' if (s.get('baseline') or {}).get('features',{}).get('ema9',0)>(s.get('baseline') or {}).get('features',{}).get('ema21',0) else 'DOWN' if s.get('baseline') else None,'probability':None,'reason':'Trend-only outlook; official next strike '+('available but not yet locked' if nxt and nxt.get('strike') else 'not yet available')+'. Never counted as a locked forecast.'}
                         book=s.get('book')
@@ -186,6 +193,7 @@ class IntelligenceWorker:
             self.error=type(exc).__name__+': '+str(exc)[:200]
             logging.getLogger(__name__).error('Intelligence worker unavailable: %s',self.error)
         finally:
+            if self.v3:self.v3.close()
             if self.scheduler:self.scheduler.close()
             self.stream.close()
             if db:db.close()

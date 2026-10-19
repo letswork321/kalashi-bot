@@ -31,6 +31,26 @@ class Notifications:
     def enqueue(self,category,ticker,key,message,now,expires,evidence=None,scope=None):
         if category not in self.enabled or not self.telegram or not self.telegram.enabled or expires<=now:return False
         scope=scope or category
+        if evidence and category in ('scalp','flip') and all(k in evidence for k in ('observed_entry_ask','possible_exit_target','required_bid_movement','conditional_net')):
+            e=evidence;label=e.get('alert_type',category.upper());hold=e.get('window',60)
+            message=(f"{label} · {e['side']} · {hold}s\n"
+                     f"Ask ${e['observed_entry_ask']:.3f} → conditional bid ${e['possible_exit_target']:.3f}; needs +${e['required_bid_movement']:.3f}.\n"
+                     f"Net IF reached ${e['conditional_net']:.3f} after both fees/slippage; NOT expected profit. {e.get('liquidity','Depth checked')}.\n"
+                     f"{e.get('entry_validation','Scenario only; not calibrated')}. Manual only.\n"
+                     f"{ticker} · {datetime.fromtimestamp(now,ET).strftime('%H:%M:%S %Z')} · expires {expires-now:.0f}s · age {now-e.get('book_ts',now):.1f}s")
+        if evidence and category=='directional' and all(k in evidence for k in ('observed_entry_ask','executable_entry','taker_fee','estimated_probability','estimated_edge')):
+            e=evidence
+            message=(f"POTENTIAL {e['side']} ENTRY · manual only\n"
+                     f"Ask ${e['observed_entry_ask']:.3f}; cost ${e['executable_entry']+e['taker_fee']:.3f} incl. costs.\n"
+                     f"Shadow estimate {e['estimated_probability']:.0%}; after-cost edge {e['estimated_edge']:.1%}. Calibrated OOS; live risk remains.\n"
+                     'Entry gates: fresh quote, depth, spread and validated model. No validated early-exit target in this settlement forecast.\n'
+                     f"{ticker} · {datetime.fromtimestamp(now,ET).strftime('%H:%M:%S %Z')} · expires10s")
+        if evidence and category=='locked' and all(k in evidence for k in ('state','strike','btc_price')):
+            e=evidence;p=e['p_up'] if e['side']=='UP' else 1-e['p_up']
+            message=(f"{'LATE' if e['state']=='LATE' else 'LOCKED'} FORECAST · {e['side']} {p:.0%} UNCALIBRATED\n"
+                     f"Strike ${e['strike']:,.2f}; BTC ${e['btc_price']:,.2f}.\n"
+                     'Volatility, momentum and book consensus. Accuracy forecast, not an entry recommendation.\n'
+                     f"{ticker} · {datetime.fromtimestamp(now,ET).strftime('%H:%M:%S %Z')} · manual only")
         previous=self.db.execute('SELECT created FROM intel_alerts WHERE category=? AND ticker=? AND COALESCE(scope,category)=? ORDER BY created DESC LIMIT 1',(category,ticker,scope)).fetchone()
         cooldown=60 if category=='scalp' else 300
         if previous and now-previous['created']<cooldown:return False
@@ -44,10 +64,11 @@ class Notifications:
     def callout(self,s,call):
         """Queue an auditable, plainly worded BTC WATCH with no trade claims."""
         if not call or 'callout' not in self.enabled:return False
-        from .callouts import message,record
+        from .callouts import message
+        from .path_scoring import record
         key=f"callout:{call['ticker']}:{int(call['candle_time'])}:{call['direction']}"
         ok=self.enqueue('callout',call['ticker'],key,message(call),s['now'],
-                        min(s['now']+15,s['market']['closed']-15),scope='callout')
+                        min(s['now']+3,s['market']['closed']-15),scope='callout')
         if ok:record(self.db,call,key)
         return ok
     def locked(self,s,record):
@@ -77,7 +98,22 @@ class Notifications:
               f"Official strike: {strike_text}\nBTC ${quote['price']:,.2f}; 3m momentum {f['momentum_3m']:.3%}; RSI {f['rsi14']:.1f}; 1m volatility {f['volatility_1m']:.3%}\n"
               'EMA/momentum agreement only; no validated probability or trade recommendation. Manual only.')
         self.enqueue('preliminary',m['ticker'],'preliminary:'+m['ticker'],text,now,min(now+20,timestamp(m['open_time'])),{'side':direction,'alert_type':'PRELIMINARY','strike':strike,'btc_price':quote['price'],'momentum':f['momentum_3m']})
+    def caller_entry(self,s,call):
+        if call.get('guidance')!='ENTER' or not call.get('contract_forecast'):return False
+        side=call['direction'];f=call['contract_forecast'];now=s['now'];m=s['market']
+        e={'side':side,'observed_entry_ask':f['entry_ask'],'possible_exit_target':f['median_exit_bid'],'window':None,'model':'v3_bid','horizon':f['horizon'],'book_ts':s['book_ts'],'quote_ts':s['quote_ts'],'book_id':s.get('book_id'),'status':'OPPORTUNITY','alert_type':'V3 VERIFIED EARLY-EXIT ENTRY'}
+        text=(f"ENTER WATCH · {side} · MANUAL ONLY\n"
+              f"Ask ${f['entry_ask']:.3f}; estimated sell BID ${f['median_exit_bid']:.3f} at {f['horizon']}s.\n"
+              f"After-cost mean range ${f['expected_net_lower']:.3f}–${f['expected_net_upper']:.3f}; forward n={f['samples']}. Not guaranteed.\n"
+              f"{call['reason'][:90]}\n{m['ticker']} · {datetime.fromtimestamp(now,ET).strftime('%H:%M:%S %Z')} · {m['closed']-now:.0f}s left · data {now-s['book_ts']:.1f}s · expires5s")
+        key=f"v3-entry:{m['ticker']}:{side}:{int(now//300)}"
+        sent=self.enqueue('directional',m['ticker'],key,text,now,now+5,e,'entry:'+side)
+        if sent:
+            with self.db:self.db.execute('INSERT OR REPLACE INTO intel_entry_state(ticker,side,key,issued,expires,active) VALUES(?,?,?,?,?,1)',(m['ticker'],side,key,now,now+5))
+        return sent
     def directional(self,s,fair,candidate):
+        if s.get('v3_active'):
+            return  # V3 runtime owns early-exit-qualified entries.
         if s.get('mode')!='live' or not candidate.get('validated') or not (0<=s['now']-s.get('quote_ts',0)<=2 and 0<=s['now']-s.get('book_ts',0)<=2):
             self.withdraw(s,[]);return
         qualifying=[]
@@ -166,12 +202,16 @@ class Notifications:
                             ask=executable(s.get('book'),e['side'],'buy',slippage=0)
                             invalid=invalid or abs(ask-e['observed_entry_ask'])>.005
                             if r['category']=='directional':
-                                from .models import shadow
-                                from .economics import fair_value
-                                fv=fair_value(check_s,shadow(self.db,check_s))
                                 levels=s['book'].no if e['side']=='UP' else s['book'].yes
-                                invalid=invalid or s['book'].spread>.04 or sum(q for _,q in levels[:5])<5 or check_s['market']['closed']-check<120 or check-s.get('quote_ts',0)>2 or check-s.get('book_ts',0)>2 or s.get('book_latency',99)>1
-                                invalid=invalid or not any(v.get('side')==e['side'] and v.get('estimated_edge',-1)>=.05 for v in fv.get('rows',[]))
+                                invalid=invalid or s['book'].spread>.04 or sum(q for _,q in levels[:5])<5 or check-s.get('quote_ts',0)>2 or check-s.get('book_ts',0)>2 or s.get('book_latency',99)>1
+                                if e.get('model')=='v3_bid':
+                                    model=s.get('early_exit_forecasts',{}).get(e['side'],{})
+                                    invalid=invalid or not s.get('book_event_verified') or s.get('spot_status')!='LIVE' or not model.get('validated') or model.get('expected_net_lower',-1)<.01 or s['market']['closed']-check<e['horizon']+30
+                                else:
+                                    from .models import shadow
+                                    from .economics import fair_value
+                                    fv=fair_value(check_s,shadow(self.db,check_s))
+                                    invalid=invalid or s['market']['closed']-check<120 or not any(v.get('side')==e['side'] and v.get('estimated_edge',-1)>=.05 for v in fv.get('rows',[]))
                             if r['category']=='scalp':
                                 current=next((v for v in scalp_radar(check_s)['rows'] if v.get('side')==e['side'] and v.get('window')==e['window']),{})
                                 invalid=invalid or current.get('status') not in ('WATCH','OPPORTUNITY') or (e.get('status')=='OPPORTUNITY' and current.get('status')!='OPPORTUNITY')
@@ -180,7 +220,9 @@ class Notifications:
             if r['category']=='callout':
                 invalid=invalid or not s or s.get('mode')!='live' or s.get('market',{}).get('ticker')!=r['ticker']
                 if s:
-                    invalid=invalid or not (0<=check-s.get('quote_ts',0)<=2 and 0<=check-s.get('book_ts',0)<=2)
+                    invalid=invalid or s.get('spot_status')!='LIVE' or not (0<=check-s.get('quote_ts',0)<=2 and 0<=check-s.get('book_ts',0)<=2)
+            if r['category']=='exit':
+                invalid=invalid or not s or not s.get('book_event_verified') or not (0<=check-s.get('book_ts',0)<=1)
             if r['category']=='settlement' and settlement_sent(self.db,r['ticker']):invalid=True
             if invalid:
                 with self.db:self.db.execute("UPDATE intel_alerts SET state='expired' WHERE id=?",(r['id'],))

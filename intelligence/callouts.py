@@ -107,16 +107,12 @@ def build(snapshot):
     }
 
 def message(c):
-    return (
-        f"{c['title']} (not an entry recommendation)\n"
-        f"{c['reason']}\n"
-        f"Entry: {c['entry']}\nExit target: {c['exit_target']}\n"
-        f"BTC at callout: ${c['btc_price']:,.2f}\n"
-        "Record check: exactly 3 minutes after the original observation, "
-        "BTC must move at least 0.05% in the predicted direction. "
-        "A missing live observation is UNSCORED, not a win.\n"
-        "Market prices can change before you see this. Manual trading only."
-    )
+    from datetime import datetime
+    from .storage import ET
+    reason=c['reason'].replace('BTC 1-minute and 5-minute EMA trends both point','1m/5m trends').replace('The last completed 1-minute candle closed','Close')
+    return (f"{c['title']}\n{reason[:180]}\nEntry: WAIT — no validated entry signal. Exit: Not validated.\n"
+            f"{c['ticker']} · {datetime.fromtimestamp(c['observed'],ET).strftime('%H:%M:%S %Z')} · {c.get('remaining',0):.0f}s left · data {c.get('quote_age',0):.1f}s\n"
+            'Research spot target0.05% /3m; not calibrated profit. Manual only.')
 
 def record(db, c, key):
     with db:
@@ -138,8 +134,9 @@ def acknowledged(db, key, sent):
 
 def observe(db, now, quote_ts=None, price=None):
     """Score from a source-time-stamped near-exact endpoint, not later candles."""
+    metric_filter=" AND metric='endpoint-v1'" if any(r[1]=='metric' for r in db.execute('PRAGMA table_info(intel_callouts)')) else ''
     rows = db.execute(
-        "SELECT key,btc_price,direction,due,minimum_move FROM intel_callouts WHERE sent IS NOT NULL AND outcome IS NULL AND due<=?",
+        "SELECT key,btc_price,direction,due,minimum_move FROM intel_callouts WHERE sent IS NOT NULL AND outcome IS NULL AND due<=?"+metric_filter,
         (now,)
     ).fetchall()
     for r in rows:
@@ -171,8 +168,9 @@ def observe(db, now, quote_ts=None, price=None):
 
 def summary(db, limit=15):
     try:
+        metric_filter=" AND metric='endpoint-v1'" if any(r[1]=='metric' for r in db.execute('PRAGMA table_info(intel_callouts)')) else ''
         rows = db.execute(
-            "SELECT key,ticker,observed,direction,btc_price,reason,due,minimum_move,sent,outcome,outcome_price,outcome_ts,state FROM intel_callouts WHERE sent IS NOT NULL ORDER BY observed DESC LIMIT ?",
+            "SELECT key,ticker,observed,direction,btc_price,reason,due,minimum_move,sent,outcome,outcome_price,outcome_ts,state FROM intel_callouts WHERE sent IS NOT NULL"+metric_filter+" ORDER BY observed DESC LIMIT ?",
             (limit,)
         ).fetchall()
         totals = dict(db.execute(
@@ -181,7 +179,7 @@ def summary(db, limit=15):
                sum(CASE WHEN outcome='NOT_HIT' THEN 1 ELSE 0 END) not_hits,
                sum(CASE WHEN outcome='MISSED' THEN 1 ELSE 0 END) missed,
                sum(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) pending
-               FROM intel_callouts WHERE sent IS NOT NULL"""
+               FROM intel_callouts WHERE sent IS NOT NULL"""+metric_filter
         ).fetchone())
     except sqlite3.OperationalError:
         return {'status':'WARMING UP', 'rows':[], 'total':0, 'hits':0, 'not_hits':0, 'missed':0, 'pending':0, 'hit_rate':None}
