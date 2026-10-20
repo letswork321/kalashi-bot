@@ -3,7 +3,7 @@ from datetime import datetime
 from .storage import loads,dumps,ET,window_start
 from .models import metrics,calibrated_fit,score
 
-FEATURES=('distance','remaining','sigma','momentum','acceleration','trend','flow','failed_breakout','failed_breakdown','rsi','quote_age')
+FEATURES=('distance','remaining','sigma','momentum','acceleration','trend','flow','failed_breakout','failed_breakdown','rsi','quote_age','efficiency20','reversal_frequency20','volatility_ratio','regime_volume_ratio','failed_continuation','volume_price_divergence')
 
 def records(db,selection='all',now=None):
     import time
@@ -33,6 +33,7 @@ def threshold_study(rows):
     return {'status':'EXPLORATORY HOLDOUT — not proof of improvement','chosen_threshold':chosen,'training_n':len(train),'test_n':len(test),'retained':len(kept),'test_coverage':len(kept)/len(test),'filtered':metrics([r['p'] for r in kept],[r['y'] for r in kept]),'unfiltered':metrics([r['p'] for r in test],[r['y'] for r in test]),'production_changed':False}
 
 def report(db,selection='all',now=None):
+    from .v5_adaptive_research import monitoring,regime_comparison,difficult_vs_trending
     rows=records(db,selection,now);groups=[]
     for c in (60,180,300,600):
         cohort=[r for r in rows if r['checkpoint']==c]
@@ -40,9 +41,10 @@ def report(db,selection='all',now=None):
             labels=sorted({fn(r) for r in cohort})
             for label in labels:
                 g=[r for r in cohort if fn(r)==label];groups.append({'checkpoint':c,'dimension':field,'value':label,**metrics([r['p'] for r in g],[r['y'] for r in g])})
-    return {'scope':selection,'research_limit':'most recent 10000 settled checkpoint records within range; lifetime scoreboard is not capped','baseline':paired(rows,'baseline'),'v4_shadow':paired(rows,'v4'),'market_favorite_by_checkpoint':[{ 'checkpoint':c,'v5':metrics([r['p'] for r in rows if r['checkpoint']==c and r['market_p'] is not None],[r['y'] for r in rows if r['checkpoint']==c and r['market_p'] is not None]),'market':metrics([r['market_p'] for r in rows if r['checkpoint']==c and r['market_p'] is not None],[r['y'] for r in rows if r['checkpoint']==c and r['market_p'] is not None])} for c in (60,180,300,600)],'loss_patterns':groups,'thresholds':{str(c):threshold_study([r for r in rows if r['checkpoint']==c]) for c in (60,180,300,600)},'interpretation':'Exploratory strata, not causal proof. Small samples and multiple comparisons can mislead. No accuracy target is guaranteed. Accuracy is separate from after-cost paper P&L.'}
+    return {'monitoring':monitoring(rows),'regime_strategies':regime_comparison(rows),'difficult_vs_trending':difficult_vs_trending(rows),'scope':selection,'research_limit':'most recent 10000 settled checkpoint records within range; lifetime scoreboard is not capped','baseline':paired(rows,'baseline'),'v4_shadow':paired(rows,'v4'),'market_favorite_by_checkpoint':[{ 'checkpoint':c,'v5':metrics([r['p'] for r in rows if r['checkpoint']==c and r['market_p'] is not None],[r['y'] for r in rows if r['checkpoint']==c and r['market_p'] is not None]),'market':metrics([r['market_p'] for r in rows if r['checkpoint']==c and r['market_p'] is not None],[r['y'] for r in rows if r['checkpoint']==c and r['market_p'] is not None])} for c in (60,180,300,600)],'loss_patterns':groups,'thresholds':{str(c):threshold_study([r for r in rows if r['checkpoint']==c]) for c in (60,180,300,600)},'interpretation':'Exploratory strata, not causal proof. Small samples and multiple comparisons can mislead. No accuracy target is guaranteed. Accuracy is separate from after-cost paper P&L.'}
 
 def train(db,now):
+    from .v5_adaptive_research import monitoring
     rows=records(db,now=now);folds=[];forecasts=[];artifacts={}
     for c in (60,180,300,600):
         cohort=[r for r in rows if r['checkpoint']==c and r['settled_at'] is not None]
@@ -58,9 +60,9 @@ def train(db,now):
             noflow=lambda rs:[{**r,'x':r['x'][:6]+r['x'][7:]} for r in rs]
             ablated=calibrated_fit(noflow(training),noflow(validation),1)
             ap=[score(ablated,r['x']) for r in noflow(test)]
-            folds.append({'checkpoint':c,'train_n':len(training),'validation_n':len(validation),'test_n':len(test),'train_label_max':max(r['settled_at'] for r in training),'validation_start':validation[0]['scheduled'],'validation_label_max':max(r['settled_at'] for r in validation),'test_start':test[0]['scheduled'],'candidate':metrics(ps,ys),'fixed_v5':metrics([r['p'] for r in test],ys),'without_flow':metrics(ap,ys)})
+            folds.append({'checkpoint':c,'train_n':len(training),'validation_n':len(validation),'test_n':len(test),'train_label_max':max(r['settled_at'] for r in training),'validation_start':validation[0]['scheduled'],'validation_label_max':max(r['settled_at'] for r in validation),'test_start':test[0]['scheduled'],'candidate':metrics(ps,ys),'fixed_v5':metrics([r['p'] for r in test],ys),'without_flow':metrics(ap,ys),'by_regime':[{ 'regime':regime,'candidate':metrics([p for r,p in zip(test,ps) if r['regime']==regime],[r['y'] for r in test if r['regime']==regime]),'fixed_v5':metrics([r['p'] for r in test if r['regime']==regime],[r['y'] for r in test if r['regime']==regime])} for regime in sorted({r['regime'] for r in test})]})
             forecasts.extend({'ticker':r['ticker'],'checkpoint':c,'p':p,'y':r['y'],'scheduled':r['scheduled']} for r,p in zip(test,ps))
             artifacts[str(c)]=model
-    out={'status':'SHADOW WALK-FORWARD EVALUATED' if folds else 'INSUFFICIENT TIME-SEPARATED FORWARD DATA','feature_names':FEATURES,'folds':folds,'candidate':metrics([r['p'] for r in forecasts],[r['y'] for r in forecasts]),'artifacts':artifacts,'automatic_promotion':False,'trained_at':now,'required_per_checkpoint':100}
+    out={'monitoring':monitoring(rows),'status':'SHADOW WALK-FORWARD EVALUATED' if folds else 'INSUFFICIENT TIME-SEPARATED FORWARD DATA','feature_names':FEATURES,'folds':folds,'candidate':metrics([r['p'] for r in forecasts],[r['y'] for r in forecasts]),'artifacts':artifacts,'automatic_promotion':False,'trained_at':now,'required_per_checkpoint':100}
     with db:db.execute('INSERT OR REPLACE INTO v5_evaluations VALUES(?,?)',(now,dumps(out)))
     return out

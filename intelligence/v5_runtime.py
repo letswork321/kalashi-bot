@@ -24,6 +24,10 @@ def message(db,ticker,c,pred,now):
     delta='DIRECTION CHANGED: '+prior['direction']+' → '+pred['direction'] if changed else 'Direction unchanged' if prior else 'Original checkpoint'
     if prior:
         delta+=f"; reference moved ${pred['reference']-prior['reference']:+,.2f}; momentum changed {pred['features']['momentum']-prior['features']['momentum']:+.5f}"
+    regime=pred.get('regime_details',{});old_regime=(prior or {}).get('regime')
+    regime_note='Regime: '+pred['regime']+(' (was '+old_regime+')' if old_regime and old_regime!=pred['regime'] else '')
+    regime_note+='; BTC liquidity: '+regime.get('liquidity',{}).get('state','UNAVAILABLE')
+    regime_note+='; reversal risk: '+('; '.join(regime.get('warnings',[])) or 'no strong completed-candle warning')
     position=db.execute("SELECT side,entry,quantity FROM v3_watch_positions WHERE ticker=? AND state='WATCHING'",(ticker,)).fetchall()
     note=''
     if position:note='\nManual position: '+', '.join(f"{p['side']} ×{p['quantity']:g}; "+('forecast now opposes your side — recheck reversal risk' if pred['direction']!=p['side'] else 'forecast still favors your side') for p in position)+'. Current sellable bid/costs must be checked; no sale performed.'
@@ -35,7 +39,7 @@ def message(db,ticker,c,pred,now):
             if quotes:note+='\nLatest verified cash-out estimates: '+ '; '.join(f"{p['side']} sellable bid ${p['bid']:.3f}, net ${p['net']:.2f}, ROI {p['roi']:.0%}; target {p['target_roi']:.0%}" for p in quotes)+'. Fees/slippage estimated, not a sale.'
     return (f"BTC Pro V5 · +{c//60}m · {ticker}\nOriginal: {original} | Latest: {pred['direction']} · {pred['conviction']}\n"
             f"UP estimate {pred['p_up']:.0%} — UNCALIBRATED / experimental\n{delta}\n"
-            f"Bull: {pred['bullish'][0]}\nBear: {pred['bearish'][0]}\n"
+            f"{regime_note}\nBull: {pred['bullish'][0]}\nBear: {pred['bearish'][0]}\n"
             f"Strike ${pred['strike']:,.2f}; {pred['source']} ${pred['reference']:,.2f}\n"
             f"{pred['remaining']:.0f}s remaining; data age {pred['quote_age']:.2f}s\n"
             f"WAIT — forecast is not an entry recommendation. {pred['risk']}\n{pred['version']}{note}\nManual only. Changed opinions are scored only at official settlement.")
@@ -43,7 +47,7 @@ def message(db,ticker,c,pred,now):
 class Runtime:
     def __init__(self,scheduler):self.scheduler=scheduler;self.stop=threading.Event();self.threads=[];self.last_error={};self.last_attempt={};self.scheduled=set();self.health_at=0
     def start(self):
-        for fn,name in [(self.run,'v5-forecast-clock'),(self.deliver,'v5-telegram'),(self.research,'v5-model-research')]:
+        for fn,name in [(self.run,'v5-forecast-clock'),(self.deliver,'v5-telegram'),(self.research,'v5-model-research'),(self.observe,'v5-live-regime')]:
             t=threading.Thread(target=fn,name=name,daemon=True);t.start();self.threads.append(t)
     def close(self):
         self.stop.set()
@@ -60,6 +64,21 @@ class Runtime:
                     with health_write(db) as health:health.execute("INSERT OR REPLACE INTO v5_health VALUES('research',?,?)",(time.time(),dumps({'ok':False,'error':type(exc).__name__})))
                 self.stop.wait(1800)
         finally:db.close()
+    @resilient
+    def observe(self):
+        # Descriptive live context only: never creates/replaces a scheduled forecast.
+        db=migrate(self.scheduler.path)
+        try:
+            ensure(db)
+            while not self.stop.is_set():
+                now=time.time()
+                try:
+                    m,kwargs=self.inputs(now);pred=forecast(**kwargs)
+                    data={'ok':True,'ticker':m['ticker'],'reference_ts':pred['reference_ts'],'source':pred['source'],'regime':pred['regime_details'],'risk':pred['risk']}
+                except (ValueError,KeyError,TypeError):data={'ok':False,'reason':'Fresh essential inputs unavailable; no live regime fabricated'}
+                with health_write(db) as health:health.execute("INSERT OR REPLACE INTO v5_health VALUES('live_context',?,?)",(now,dumps(data)))
+                self.stop.wait(2)
+        finally:db.close()
     def inputs(self,now):
         with self.scheduler.lock:c=dict(self.scheduler.cache)
         meta=c.get('metadata') or {};m=meta.get('current');q=c.get('quote') or {}
@@ -71,7 +90,7 @@ class Runtime:
         if not q:raise ValueError('ESSENTIAL_QUOTE_UNAVAILABLE')
         brti=self.scheduler.brti_stream.snapshot() if getattr(self.scheduler,'brti_stream',None) else None
         extra=c.get('v5candles') or {}
-        return m,dict(now=now,opened=timestamp(m['open_time']),closed=timestamp(m['close_time']),strike=float(m['floor_strike']),price=q['price'],quote_ts=q['timestamp'],candles1=candle_dict(c.get('candles') or []),candles5=candle_dict(extra.get(300,[])),candles15=candle_dict(extra.get(900,[])),ticks=live.get('rows',[]) if live and live['status']=='LIVE' else [],source=q.get('source','Coinbase REST spot PROXY'),brti=brti)
+        return m,dict(now=now,opened=timestamp(m['open_time']),closed=timestamp(m['close_time']),strike=float(m['floor_strike']),price=q['price'],quote_ts=q['timestamp'],candles1=candle_dict(c.get('candles') or []),candles5=candle_dict(extra.get(300,[])),candles15=candle_dict(extra.get(900,[])),ticks=live.get('rows',[]) if live and live['status']=='LIVE' else [],source=q.get('source','Coinbase REST spot PROXY'),brti=brti,btc_liquidity=c.get('btcliquidity'))
     def tick(self,db,now):
         with self.scheduler.lock:meta=dict(self.scheduler.cache.get('metadata') or {})
         # Register all known official markets, including ones discovered after a deadline.

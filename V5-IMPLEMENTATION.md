@@ -33,3 +33,7 @@ The new trained candidates are research-only: reporting does not silently replac
 ## Resource / provenance bounds
 
 Lifetime scoreboard uses full retained history (not capped). Score aggregates refresh at most every 10s; current original/latest fetch independently. Browser history is capped at 80 compact records; forensic research at 10,000 settled checkpoint rows with scope disclosed, training at the last 500/checkpoint. Paper drawdown is labeled as the last 2,000 entries in issue order, not a settlement-time equity guarantee. No forecast-history retention deletion exists. No balance/order/portfolio execution endpoint is introduced. Optional data keys remain backend-only and disabled by existing explicit security/opt-in controls.
+
+## Adaptive addition
+
+The ongoing build now includes the user's adaptive-market requirements. [V5-ADAPTIVE-ADDENDUM.md](V5-ADAPTIVE-ADDENDUM.md) gives the exact implementation, thresholds, validation gates and remaining limitations. The current independent model version is `btc-independent-v5-2-adaptive-experimental`; the earlier version remains a retained historical version, not rewritten. The fixed routing is experimental; actual regime-conditioned unseen evaluation, drift monitoring and periodic calibration checks do not automatically promote models.

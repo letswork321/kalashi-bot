@@ -26,11 +26,11 @@ class ShortHTTP(HTTP):
 
 class ForecastScheduler:
     def __init__(self,path,telegram=None):
-        self.path=path;self.telegram=telegram;self.stop=threading.Event();self.lock=threading.Lock();self.cache={};self.threads=[];self.spot_stream=None;self.brti_stream=None;self.v5=None
+        self.path=path;self.telegram=telegram;self.stop=threading.Event();self.lock=threading.Lock();self.cache={};self.threads=[];self.spot_stream=None;self.brti_stream=None;self.v5=None;self.btc_depth_history=[]
     def put(self,name,value):
         with self.lock:self.cache[name]=value
     def start(self):
-        for name,fn in [('metadata',self.metadata),('candles',self.candles),('quote',self.quote),('book',self.book),('v5candles',self.v5candles)]:
+        for name,fn in [('metadata',self.metadata),('candles',self.candles),('quote',self.quote),('book',self.book),('v5candles',self.v5candles),('btcliquidity',self.btcliquidity)]:
             thread=threading.Thread(target=self.feed,args=(name,fn),daemon=True,name='forecast-'+name);thread.start();self.threads.append(thread)
         t=threading.Thread(target=self.run,daemon=True,name='forecast-clock');t.start();self.threads.append(t)
         if __import__('os').environ.get('BTC_PRO_V5')=='true':
@@ -47,7 +47,7 @@ class ForecastScheduler:
                 with self.lock:current=(self.cache.get('metadata') or {}).get('current')
                 if current:
                     phase=now-timestamp(current['open_time']);urgent=any(c-15<=phase<=c+6 for c in (60,180,300,600))
-            self.stop.wait((.3 if urgent else 2) if name in ('quote','book') else 5 if name=='metadata' else 20)
+            self.stop.wait((.3 if urgent else 2) if name in ('quote','book') else (2 if urgent else 5) if name=='btcliquidity' else 5 if name=='metadata' else 20)
     def metadata(self,http):
         now=time.time()
         data=http.get(KALSHI,'/markets',{'series_ticker':'KXBTC15M','limit':100,'min_close_ts':int(now),'max_close_ts':int(now+1800)})
@@ -61,6 +61,16 @@ class ForecastScheduler:
     def candles(self,http):
         now=time.time();iso=lambda t:datetime.fromtimestamp(t,timezone.utc).isoformat()
         self.put('candles',http.get(COINBASE,'/products/BTC-USD/candles',{'granularity':60,'start':iso(now-180*60),'end':iso(now)}))
+    def btcliquidity(self,http):
+        if __import__('os').environ.get('BTC_PRO_V5')!='true':return
+        start=time.time();data=http.get(COINBASE,'/products/BTC-USD/book',{'level':2});now=time.time()
+        bids=[(float(r[0]),float(r[1])) for r in data.get('bids',[])[:10]];asks=[(float(r[0]),float(r[1])) for r in data.get('asks',[])[:10]]
+        if not bids or not asks or any(not math.isfinite(p+q) or p<=0 or q<0 for p,q in bids+asks) or bids[0][0]>=asks[0][0]:raise ValueError('Invalid BTC depth snapshot')
+        buy=sum(p*q for p,q in bids);sell=sum(p*q for p,q in asks);depth=buy+sell
+        import statistics
+        baseline=statistics.median(self.btc_depth_history) if len(self.btc_depth_history)>=20 else None
+        self.btc_depth_history=(self.btc_depth_history+[depth])[-120:]
+        self.put('btcliquidity',{'status':'OBSERVED REST SNAPSHOT','received':now,'latency':now-start,'spread_bps':(asks[0][0]-bids[0][0])/((asks[0][0]+bids[0][0])/2)*10000,'imbalance':(buy-sell)/depth if depth else 0,'depth_ratio':depth/baseline if baseline else None,'sequence':data.get('sequence'),'source':'Coinbase BTC-USD L2 REST; receipt-time observation, not sequenced changes'})
     def v5candles(self,http):
         if __import__('os').environ.get('BTC_PRO_V5')!='true':return
         now=time.time();iso=lambda t:datetime.fromtimestamp(t,timezone.utc).isoformat()

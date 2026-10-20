@@ -8,7 +8,7 @@ import statistics
 from .indicators import completed,ema,rsi,macd,bollinger,InsufficientData
 from .v4_analysis import pressure
 
-VERSION='btc-independent-v5-1-experimental'
+VERSION='btc-independent-v5-2-adaptive-experimental'
 
 def clip(x,lo,hi):return max(lo,min(hi,x))
 
@@ -26,7 +26,7 @@ def frame(candles,now,period):
     except InsufficientData:out['macd']=None
     return out
 
-def forecast(*,now,opened,closed,strike,price,quote_ts,candles1,candles5=(),candles15=(),ticks=(),source='Coinbase spot PROXY',brti=None):
+def forecast(*,now,opened,closed,strike,price,quote_ts,candles1,candles5=(),candles15=(),ticks=(),source='Coinbase spot PROXY',brti=None,btc_liquidity=None):
     # Keyword-only allowlist prevents accidental injection of contract odds.
     if not all(math.isfinite(float(v)) for v in (now,opened,closed,strike,price,quote_ts)) or not 899<=closed-opened<=901 or not opened<=now<closed or strike<=0 or price<=0:raise ValueError('INVALID_ESSENTIAL_INPUT')
     if not 0<=now-quote_ts<=3:raise ValueError('STALE_ESSENTIAL_QUOTE')
@@ -57,7 +57,20 @@ def forecast(*,now,opened,closed,strike,price,quote_ts,candles1,candles5=(),cand
            'macd_momentum':.05*clip((a['macd']['histogram'] if a['macd'] else 0)/(price*sigma),-1,1),
            'rsi_exhaustion':-.05 if a['rsi14']>70 and a['upper_wick']>.4 else .05 if a['rsi14']<30 and a['lower_wick']>.4 else 0,
            'failed_level_test':-.10 if a['failed_breakout'] else .10 if a['failed_breakdown'] else 0}
-    drift=sigma*clip(sum(parts.values()),-.35,.35)
+    from .v5_regime import classify
+    regime=classify(rows,now,btc_liquidity)
+    continuation=sigma*clip(sum(parts.values()),-.35,.35)
+    # Independent mean-reversion hypothesis: reference relative to completed EMA20,
+    # with actual rejection evidence; no contract odds or retrospective labels.
+    fade=clip(-a['ema20_gap']/sigma,-1,1)*.15
+    if a['failed_breakout']:fade-=.10
+    if a['failed_breakdown']:fade+=.10
+    reversion=sigma*clip(fade,-.30,.30)
+    difficult=regime['low_conviction'];clean='TREND' in regime['primary'] and not difficult
+    weight=.85 if clean else .25 if regime['primary'] in ('CHOPPY','REVERSAL HEAVY','RANGING') else .5
+    confidence_scale=.5 if difficult else .8
+    liquidity_drift=.02*(regime['liquidity']['imbalance'] or 0) if regime['liquidity']['imbalance'] is not None else 0
+    drift=clip((weight*continuation+(1-weight)*reversion)*confidence_scale+sigma*liquidity_drift,-.35*sigma,.35*sigma)
     minutes=(closed-now)/60
     # For the average over the final 60 seconds, Var(mean) = sigma^2*(T-2/3)
     # when T>=1 minute. These checkpoints are all earlier than that window.
@@ -66,11 +79,18 @@ def forecast(*,now,opened,closed,strike,price,quote_ts,candles1,candles5=(),cand
     z=math.log(reference/strike)/sd
     drift_horizon=min(minutes,3) # short-lived evidence, not a 14-minute constant drift
     adjusted=z+drift*drift_horizon/sd
-    p=clip(.5*(1+math.erf(adjusted/math.sqrt(2))),.01,.99)
+    probability=lambda d:clip(.5*(1+math.erf((z+d*drift_horizon/sd)/math.sqrt(2))),.01,.99)
+    p=probability(drift)
+    strategies={'momentum_continuation':probability(continuation),'mean_reversion':probability(reversion),'neutral_strike_volatility':probability(0),'adaptive_fixed':p}
+    regime.update(continuation_weight=weight,drift_scale=confidence_scale)
+
     direction='UP' if p>=.5 else 'DOWN';bull=[];bear=[]
     (bull if reference>=strike else bear).append(f'Reference is ${abs(reference-strike):,.2f} '+('above' if reference>=strike else 'below')+' the official strike')
     for key,value in parts.items():
         if value:(bull if value>0 else bear).append(key.replace('_',' ')+(' supports rising BTC' if value>0 else 'supports falling BTC'))
+    if difficult:
+        bull.append('Regime is '+regime['primary']+'; upside continuation is uncertain')
+        bear.append('; '.join(regime['warnings']) or 'Chop/transition makes downside reversals harder to time')
     if a['upper_wick']>=.5:bear.append('Long upper wick: rejection risk')
     if a['lower_wick']>=.5:bull.append('Long lower wick: rebound risk')
     horizon=[t for t in ticks if now-60<=t['ts']<=now]
@@ -78,10 +98,10 @@ def forecast(*,now,opened,closed,strike,price,quote_ts,candles1,candles5=(),cand
     if flow60['status']=='LIVE' and horizon:
         vol=sum(t['size'] for t in horizon)
         if vol:vwap=sum(t['price']*t['size'] for t in horizon)/vol
-    return {'version':VERSION,'direction':direction,'p_up':p,'calibrated':False,'conviction':'LOW' if max(p,1-p)<.65 or missing or flow60['buy_share'] is None else 'MODEL STRONG / UNVALIDATED',
+    return {'version':VERSION,'direction':direction,'p_up':p,'calibrated':False,'conviction':'LOW' if max(p,1-p)<.65 or missing or flow60['buy_share'] is None or difficult else 'MODEL STRONG / UNVALIDATED',
             'source':source,'official_reference':official,'reference':reference,'reference_ts':event,'quote_age':now-event,'strike':strike,'remaining':closed-now,
             'bullish':bull or ['No strong bullish evidence'],'bearish':bear or ['No strong bearish evidence'],'frames':frames,'pressure15':flow15,'pressure60':flow60,
-            'features':{'distance':reference/strike-1,'sigma':sigma,'momentum':momentum,'acceleration':acceleration,'trend':trend,'flow':flow,'failed_breakout':int(a['failed_breakout']),'failed_breakdown':int(a['failed_breakdown']),'rsi':a['rsi14'],'volume_ratio':a['volume_ratio'],'vwap60':vwap,'z':z,'drift':drift,'remaining':closed-now,'quote_age':now-event,'drift_parts':parts},
-            'missing_optional':missing,'regime':'UP TREND' if trend>.3 else 'DOWN TREND' if trend<-.3 else 'RANGING / MIXED','guidance':'WAIT',
+            'features':{'distance':reference/strike-1,'sigma':sigma,'momentum':momentum,'acceleration':acceleration,'trend':trend,'flow':flow,'failed_breakout':int(a['failed_breakout']),'failed_breakdown':int(a['failed_breakdown']),'rsi':a['rsi14'],'volume_ratio':a['volume_ratio'],'vwap60':vwap,'z':z,'drift':drift,'remaining':closed-now,'quote_age':now-event,'drift_parts':parts,'efficiency20':regime['efficiency20'],'reversal_frequency20':regime['reversal_frequency20'],'volatility_ratio':regime['volatility_ratio'],'regime_volume_ratio':regime['volume_ratio'],'failed_continuation':int(regime['failed_continuation']),'volume_price_divergence':int(regime['volume_price_divergence']),'continuation_weight':weight},
+            'missing_optional':missing,'regime':regime['primary'],'regime_details':regime,'strategy_estimates':strategies,'guidance':'WAIT',
             'risk':'Experimental, uncalibrated BTC model; '+('benchmark path averaging remains approximate' if official else 'Coinbase is a proxy, not the settlement index'),
             'model_basis':'BTC-only strike/volatility plus bounded experimental momentum, multi-frame trend, verified flow and failed-level-test drift; no contract odds'}

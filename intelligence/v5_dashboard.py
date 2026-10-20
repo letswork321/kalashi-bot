@@ -14,6 +14,8 @@ def snapshot(db,now,selection='all'):
     active=[r for r in history if current and r['ticker']==current['ticker']]
     original=next((r for r in active if r['checkpoint']==60),None);latest=next((r for r in active if r['state']=='FORECAST'),None)
     health=[{'name':r['name'],'observed':r['observed'],'age':now-r['observed'],**loads(r['payload'])} for r in db.execute('SELECT * FROM v5_health')]
+    context=next((h for h in health if h['name']=='live_context'),None)
+    if context:context={**context,'fresh':context.get('ok') and 0<=context['age']<=4 and 0<=now-context.get('reference_ts',0)<=3}
     evaluation=db.execute('SELECT payload FROM v5_evaluations ORDER BY created DESC LIMIT 1').fetchone()
     evaluation=loads(evaluation['payload']) if evaluation else {'status':'WARMING UP — requires 100 settled forecasts per checkpoint'};evaluation.pop('artifacts',None)
     states=[dict(r) for r in db.execute('SELECT state,count(*) n FROM v5_outbox GROUP BY state')]
@@ -27,4 +29,4 @@ def snapshot(db,now,selection='all'):
             cached=(now,summary(db,now,selection));_cache[key]=cached
             if len(_cache)>16:_cache.pop(next(iter(_cache)))
     compact=[{**r,'payload':{k:r['payload'].get(k) for k in ('direction','p_up','version','conviction','source')} if r['payload'] else None} for r in history[:80]]
-    return {'paper':paper_summary(db),'status':'PAPER / EXPERIMENTAL','now':now,'range':selection,'market':dict(current) if current else None,'original':original,'latest':latest,'scores':cached[1],'historical':settlement_summary(db),'history':compact,'settings':settings(db),'health':health,'delivery':states,'evaluation':evaluation,'warning':'Checkpoint forecasts are immutable historical opinions, not current executable trade advice. Uncalibrated estimates; no proven accuracy improvement.'}
+    return {'live_context':context,'paper':paper_summary(db),'status':'PAPER / EXPERIMENTAL','now':now,'range':selection,'market':dict(current) if current else None,'original':original,'latest':latest,'scores':cached[1],'historical':settlement_summary(db),'history':compact,'settings':settings(db),'health':health,'delivery':states,'evaluation':evaluation,'warning':'Checkpoint forecasts are immutable historical opinions, not current executable trade advice. Uncalibrated estimates; no proven accuracy improvement.'}
