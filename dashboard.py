@@ -238,6 +238,33 @@ def v3_watch():
     finally:
         if db:db.close()
 
+@app.get('/api/v4/state')
+def v4_state():
+    db=None
+    try:
+        from intelligence.v4_runtime import snapshot
+        db=_v3_db();return jsonify(snapshot(db,time.time()))
+    except (sqlite3.Error,ValueError,KeyError):return jsonify({'status':'WARMING UP','cashout':{'guidance':'WAIT','sides':[]},'positions':[]})
+    finally:
+        if db:db.close()
+
+@app.post('/api/v4/positions')
+def v4_positions():
+    guard=_v3_write_guard()
+    if guard:return guard
+    db=None
+    try:
+        from intelligence.storage import connect
+        from intelligence.v4_positions import create,realized
+        check=_v3_db();check.close();db=connect(DB);v=request.get_json(silent=True)
+        if isinstance(v,dict) and v.get('action')=='realized':
+            v=dict(v);v.pop('action');return jsonify({'net':realized(db,v,time.time()),'status':'USER CONFIRMED; no account verification or order'})
+        identifier=create(db,v,time.time());return jsonify({'id':identifier,'status':'Manual basis saved; no trade placed'})
+    except ValueError as exc:return jsonify({'error':str(exc)}),400
+    except sqlite3.Error:return jsonify({'error':'V4 schema initializing'}),409
+    finally:
+        if db:db.close()
+
 if __name__ == '__main__':
     # Local testing only; production uses gunicorn in start.sh.
     app.run(host='127.0.0.1',port=8000,debug=False)

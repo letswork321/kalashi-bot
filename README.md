@@ -1,3 +1,7 @@
+# BTC Pro V4 — separate research upgrade
+
+Read [V4 Windows launch and V3 fallback](V4-WINDOWS.md), [all V4 request areas and limits](V4-IMPLEMENTATION.md), and [verification record](V4-VERIFICATION.md). V3 remains the production baseline; V4 candidates are shadow-only. No auto trading or demonstrated75% accuracy/profitability.
+
 # BTC Pro V3 release
 
 Start with [safe V3 Windows update](V3-WINDOWS.md), [all 26 implementation areas](V3-IMPLEMENTATION.md), and [verified results and limitations](V3-VERIFICATION.md). Existing history and manual-only trading are preserved. Live streaming and validated profitability are not implied by this release.

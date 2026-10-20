@@ -30,6 +30,10 @@ class Notifications:
     def enabled(self):return {c for c,v in settings(self.db,self.defaults).items() if v}
     def enqueue(self,category,ticker,key,message,now,expires,evidence=None,scope=None):
         if category not in self.enabled or not self.telegram or not self.telegram.enabled or expires<=now:return False
+        if category=='extreme':return False
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='v4_events'").fetchone() and category not in ('settlement','daily'):
+            count=self.db.execute("SELECT count(*) FROM intel_alerts WHERE ticker=? AND category NOT IN ('settlement','daily') AND state NOT IN ('disabled','expired')",(ticker,)).fetchone()[0]
+            if count>=(4 if category=='exit' else 3):return False
         scope=scope or category
         if evidence and category in ('scalp','flip') and all(k in evidence for k in ('observed_entry_ask','possible_exit_target','required_bid_movement','conditional_net')):
             e=evidence;label=e.get('alert_type',category.upper());hold=e.get('window',60)
@@ -221,6 +225,18 @@ class Notifications:
                 invalid=invalid or not s or s.get('mode')!='live' or s.get('market',{}).get('ticker')!=r['ticker']
                 if s:
                     invalid=invalid or s.get('spot_status')!='LIVE' or not (0<=check-s.get('quote_ts',0)<=2 and 0<=check-s.get('book_ts',0)<=2)
+            if r['category'] in ('live_change','flip') and str(r['key']).startswith('v4-'):
+                from .v4_paths import verified
+                if not verified(s):
+                    with self.db:self.db.execute("UPDATE intel_alerts SET state='expired' WHERE id=?",(r['id'],))
+                    continue
+            if r['category'] in ('cashout','exit') and str(r['key']).startswith('v4-'):
+                from .v4_paths import verified
+                invalid=invalid or not verified(s)
+                if str(r['scope'] or '').startswith('v4-watch:'):
+                    identifier=int(r['scope'].split(':')[1])
+                    active=self.db.execute("SELECT 1 FROM v3_watch_positions WHERE id=? AND state='WATCHING'",(identifier,)).fetchone()
+                    invalid=invalid or not active
             if r['category']=='exit':
                 invalid=invalid or not s or not s.get('book_event_verified') or not (0<=check-s.get('book_ts',0)<=1)
             if r['category']=='settlement' and settlement_sent(self.db,r['ticker']):invalid=True

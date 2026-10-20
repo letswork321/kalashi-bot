@@ -22,13 +22,13 @@ def target_bid(entry,quantity=1,entry_fee=None,roi=.65,multiplier=1,slippage=.00
     return hi
 
 def settings(db):
-    out={'target_roi':.65,'milestones':[.1,.25,.5,.6,.65,.75,.9]}
+    out={'target_roi':.65,'milestones':[.1,.25,.5,.6,.65,.75,.9,.99]}
     for r in db.execute('SELECT name,value FROM v3_settings'):
         if r['name']=='target_roi':out['target_roi']=float(loads(r['value']))
     return out
 
 def set_target(db,value,now):
-    if type(value) not in (int,float) or not math.isfinite(value) or not .05<=value<=.9:raise ValueError('Net-on-stake target must be between5% and90%')
+    if type(value) not in (int,float) or not math.isfinite(value) or not .05<=value<=.99:raise ValueError('Net-on-stake target must be between5% and99%')
     with db:db.execute("INSERT INTO v3_settings VALUES('target_roi',?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated=excluded.updated",(dumps(value),now))
     return settings(db)
 
@@ -36,7 +36,7 @@ def add_watch(db,values,now):
     if not isinstance(values,dict) or set(values)-{'ticker','side','entry','quantity','entry_fee','target_roi'}:raise ValueError('Unknown watch-position fields')
     ticker=values.get('ticker','');side=values.get('side');entry=values.get('entry');q=values.get('quantity',1);ef=values.get('entry_fee');roi=values.get('target_roi',settings(db)['target_roi'])
     if not isinstance(ticker,str) or not ticker.startswith('KXBTC15M-') or len(ticker)>100 or side not in ('UP','DOWN'):raise ValueError('A valid KXBTC15M ticker and UP/DOWN side are required')
-    if any(type(x) not in (int,float) or not math.isfinite(x) for x in (entry,q,ef,roi)) or not 0<entry<1 or not 0<q<=10000 or ef<0 or ef>q or not .05<=roi<=.9:raise ValueError('Supply entry price, quantity, total entry fee and5–90% net goal; no account data is read')
+    if any(type(x) not in (int,float) or not math.isfinite(x) for x in (entry,q,ef,roi)) or not 0<entry<1 or not 0<q<=10000 or ef<0 or ef>q or not .05<=roi<=.99:raise ValueError('Supply entry price, quantity, total entry fee and5–99% net goal; no account data is read')
     if db.execute("SELECT count(*) FROM v3_watch_positions WHERE state='WATCHING'").fetchone()[0]>=10:raise ValueError('At most10 watch positions')
     with db:
         cur=db.execute('INSERT INTO v3_watch_positions(ticker,side,entry,quantity,entry_fee,created,target_roi) VALUES(?,?,?,?,?,?,?)',(ticker,side,entry,q,ef,now,roi))
@@ -114,7 +114,7 @@ class BidResearch:
                 lo,mid,hi=returns[int(.1*(len(returns)-1))],statistics.median(returns),returns[int(.9*(len(returns)-1))]
                 coverage=sum(lo<=r['bid']-r['entry_ask']<=hi for r in test)/len(test)
                 nets=[r['net'] for r in test];mean=statistics.mean(nets);margin=1.96*statistics.stdev(nets)/len(nets)**.5
-                validated=.7<=coverage<=.98 and len(test)>=60
+                validated=.7<=coverage<=.998 and len(test)>=60
                 target=target_bid(ask+.002,roi=goal,multiplier=s.get('fee_multiplier',1))
                 goal_frequency=sum(v>=target-ask for v in returns)/len(returns) if target is not None else 0
                 goal_test=sum(r['bid']-r['entry_ask']>=target-ask for r in test)/len(test) if target is not None else 0

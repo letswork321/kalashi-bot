@@ -18,8 +18,10 @@ from .indicators import tick_metrics,InsufficientData
 class V3Runtime:
     def __init__(self,owner):
         self.owner=owner;self.stop=threading.Event();self.thread=None;self.history_thread=None;self.spot=CoinbaseStream();self.brti=BRTIStream();self.history={};self.lock=threading.Lock();self.last_history={};self.last_tick=None;self.last_modules={};self.forecasts={};self.forecast_time=0
+        from .v4_runtime import Runtime
+        self.v4=Runtime(owner)
     def start(self):
-        self.spot.start();self.brti.start()
+        self.spot.start();self.brti.start();self.v4.start()
         self.history_thread=threading.Thread(target=self.collect_history,daemon=True,name='v3-history-input');self.history_thread.start()
         self.thread=threading.Thread(target=self.run,daemon=True,name='v3-live-observer');self.thread.start()
     def collect_history(self):
@@ -113,6 +115,7 @@ class V3Runtime:
                         notify.caller_entry(s,output)
                         notify.withdraw(s,[output['direction']] if output['guidance']=='ENTER' else [])
                         s['caller_direction']=output['direction']
+                        self.v4.step(db,s,spot['rows'],spot,notify)
                         if output['guidance']=='ENTER' and output['direction']:
                             from .economics import Simulator
                             pid=Simulator(db).propose(f"v3-early:{s['market']['ticker']}:{output['direction']}:{int(now//60)}",'directional','v3_early_exit',s,output['direction'],None)
@@ -143,7 +146,7 @@ class V3Runtime:
                 self.stop.wait(.2)
         finally:db.close()
     def close(self):
-        self.stop.set();self.spot.close();self.brti.close()
+        self.stop.set();self.spot.close();self.brti.close();self.v4.close()
         if self.thread:self.thread.join(timeout=2)
 
 

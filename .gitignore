@@ -16,3 +16,7 @@ data-import-*/
 # Inspection-only downloaded documentation is not shipped.
 references/*.txt
 references/*.yaml
+
+# Sanitized research remains private until the user explicitly shares it.
+exports/
+research-export*.json

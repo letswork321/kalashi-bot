@@ -3,7 +3,7 @@ import os
 import sqlite3
 import time
 
-CATEGORIES = {'preliminary', 'locked', 'withdrawal', 'directional', 'scalp', 'flip', 'settlement', 'breakout', 'reversal', 'confluence', 'daily', 'callout', 'exit'}
+CATEGORIES = {'preliminary', 'locked', 'withdrawal', 'directional', 'scalp', 'flip', 'settlement', 'breakout', 'reversal', 'confluence', 'daily', 'callout', 'exit', 'live_change', 'cashout'}
 
 def settings(db, base=None):
     defaults = {c: c in {'directional', 'settlement','locked','withdrawal','callout'} for c in CATEGORIES}

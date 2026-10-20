@@ -1,7 +1,7 @@
-name: BTC Pro V3 Tests
+name: BTC Pro V4 Tests
 on:
   push:
-    branches: [btc-pro-v3-live-chart-callouts]
+    branches: [btc-pro-v4-intelligence]
   workflow_dispatch:
 jobs:
   python-tests:
@@ -21,7 +21,7 @@ jobs:
       - name: Compile all application modules
         run: python -m compileall -q intelligence scanner.py dashboard.py windows_setup.py windows_runner.py inplace_update.py
       - name: Check all JavaScript syntax
-        run: node --check static/pro.js && node --check static/intelligence.js && node --check static/alerts.js
+        run: node --check static/v4.js && node --check static/pro.js && node --check static/intelligence.js && node --check static/alerts.js
       - name: Run unit, migration and safety tests
         run: python .github/scripts/run_tests.py
       - name: Verify actual NuGet Python 3.12.10 bootstrap on Windows

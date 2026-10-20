@@ -83,14 +83,15 @@ def migrate(path):
         if mode and mode['value']=='mock':
             db.close();raise ValueError('Intelligence refuses to mix genuine collection with the mock database')
     exists=db.execute("SELECT 1 FROM sqlite_master WHERE name='intel_schema'").fetchone()
-    if exists and db.execute('SELECT 1 FROM intel_schema WHERE version=9').fetchone():return db
+    if exists and db.execute('SELECT 1 FROM intel_schema WHERE version=10').fetchone():return db
     # No migration writes until a complete online backup of pre-existing history exists.
     tables=db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     saved=backup_database(path) if tables else None
     try:
         from .callouts import SCHEMA as CALL_SCHEMA
         from .v3_storage import SCHEMA as V3_SCHEMA
-        db.executescript('BEGIN IMMEDIATE;\n'+SCHEMA+CALL_SCHEMA+V3_SCHEMA)
+        from .v4_schema import SCHEMA as V4_SCHEMA
+        db.executescript('BEGIN IMMEDIATE;\n'+SCHEMA+CALL_SCHEMA+V3_SCHEMA+V4_SCHEMA)
         if 'settled_at' not in {r['name'] for r in db.execute('PRAGMA table_info(intel_markets)')}:
             db.execute('ALTER TABLE intel_markets ADD COLUMN settled_at REAL')
         columns=list(db.execute('PRAGMA table_info(intel_books)'))
@@ -111,7 +112,7 @@ def migrate(path):
         for name,definition in [('metric',"TEXT NOT NULL DEFAULT 'endpoint-v1'"),('target_price','REAL'),('source',"TEXT NOT NULL DEFAULT 'Coinbase REST'"),('version',"TEXT NOT NULL DEFAULT 'caller-prototype-v1'")]:
             if name not in {r['name'] for r in db.execute('PRAGMA table_info(intel_callouts)')}:db.execute('ALTER TABLE intel_callouts ADD COLUMN '+name+' '+definition)
         db.execute("CREATE TRIGGER IF NOT EXISTS ico_v3_immutable BEFORE UPDATE OF metric,target_price,source,version ON intel_callouts BEGIN SELECT RAISE(ABORT,'Callout metric cannot be rewritten'); END;")
-        db.execute('INSERT OR IGNORE INTO intel_schema VALUES(9,?,?)',(time.time(),saved))
+        db.execute('INSERT OR IGNORE INTO intel_schema VALUES(10,?,?)',(time.time(),saved))
         db.commit()
     except Exception:db.rollback();db.close();raise
     return db

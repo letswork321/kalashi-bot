@@ -19,10 +19,14 @@ def proxy_options():
 
 class TradeTape:
     def __init__(self):
-        self.rows=deque(maxlen=30000);self.last_id=None;self.epoch=0;self.gaps=0;self.last_received=0;self.status='CONNECTING';self.rejected=0
+        self.rows=deque(maxlen=30000);self.last_id=None;self.epoch=0;self.gaps=0;self.last_received=0;self.status='CONNECTING';self.rejected=0;self.heartbeat=None;self.error=None;self.reconnects=0
     def reset(self):
         self.epoch+=1;self.last_id=None;self.status='RESYNCING'
     def apply(self,msg,received):
+        if msg.get('type')=='heartbeat' and msg.get('product_id')=='BTC-USD':
+            try:self.heartbeat={'event':datetime.fromisoformat(msg['time'].replace('Z','+00:00')).timestamp(),'received':received,'last_id':int(msg['last_trade_id'])}
+            except (KeyError,ValueError,TypeError):self.rejected+=1
+            return None
         if msg.get('product_id')!='BTC-USD' or msg.get('type') not in ('match','last_match'):return None
         try:
             event=datetime.fromisoformat(msg['time'].replace('Z','+00:00')).timestamp()
@@ -37,7 +41,7 @@ class TradeTape:
     def snapshot(self,now):
         last=self.rows[-1] if self.rows else None
         fresh=bool(last and 0<=now-last['ts']<=3 and 0<=now-self.last_received<=3 and self.status=='STREAMING')
-        return {'source':'Coinbase BTC-USD WebSocket','status':'LIVE' if fresh else 'STALE' if last else self.status,'event_ts':last['ts'] if last else None,'received_ts':self.last_received or None,'age':now-last['ts'] if last else None,'price':last['price'] if last else None,'gaps':self.gaps,'epoch':self.epoch,'rejected':self.rejected,'rows':list(self.rows)}
+        return {'source':'Coinbase BTC-USD WebSocket','status':'LIVE' if fresh else 'STALE' if last else self.status,'event_ts':last['ts'] if last else None,'received_ts':self.last_received or None,'age':now-last['ts'] if last else None,'price':last['price'] if last else None,'gaps':self.gaps,'epoch':self.epoch,'rejected':self.rejected,'rows':list(self.rows),'last_id':self.last_id,'heartbeat':self.heartbeat,'error':self.error,'reconnects':self.reconnects}
 
 class CoinbaseStream:
     def __init__(self):
@@ -52,14 +56,16 @@ class CoinbaseStream:
                 import websocket
                 self.ws=websocket.create_connection(URL,timeout=5,**proxy_options())
                 self.ws.send(json.dumps({'type':'subscribe','product_ids':['BTC-USD'],'channels':['matches','heartbeat']}))
-                with self.lock:self.tape.reset()
+                with self.lock:self.tape.reset();self.tape.error=None
                 delay=1
                 while not self.stop.is_set():
                     message=json.loads(self.ws.recv())
                     if message.get('type')=='error':raise ValueError('Subscription rejected')
                     with self.lock:self.tape.apply(message,time.time())
-            except Exception:
-                with self.lock:self.tape.status='DISCONNECTED';self.tape.reset()
+            except Exception as exc:
+                with self.lock:
+                    self.tape.reset();self.tape.status='UNAVAILABLE';self.tape.reconnects+=1
+                    self.tape.error={'type':type(exc).__name__,'http_status':getattr(exc,'status_code',None),'at':time.time(),'reason':'Connection/Upgrade failed' if self.ws is None else 'Stream disconnected or subscription rejected'}
                 self.stop.wait(delay);delay=min(30,delay*2)
             finally:
                 if self.ws:

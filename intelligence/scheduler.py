@@ -24,7 +24,7 @@ class ShortHTTP(HTTP):
 
 class ForecastScheduler:
     def __init__(self,path,telegram=None):
-        self.path=path;self.telegram=telegram;self.stop=threading.Event();self.lock=threading.Lock();self.cache={};self.threads=[]
+        self.path=path;self.telegram=telegram;self.stop=threading.Event();self.lock=threading.Lock();self.cache={};self.threads=[];self.spot_stream=None
     def put(self,name,value):
         with self.lock:self.cache[name]=value
     def start(self):
@@ -53,6 +53,9 @@ class ForecastScheduler:
         now=time.time();iso=lambda t:datetime.fromtimestamp(t,timezone.utc).isoformat()
         self.put('candles',http.get(COINBASE,'/products/BTC-USD/candles',{'granularity':60,'start':iso(now-180*60),'end':iso(now)}))
     def quote(self,http):
+        live=self.spot_stream.snapshot() if self.spot_stream else None
+        if live and live['status']=='LIVE':
+            self.put('quote',{'price':live['price'],'timestamp':live['event_ts'],'received':time.time(),'source':'Coinbase WebSocket'});return
         tick=http.get(COINBASE,'/products/BTC-USD/ticker')
         price=float(tick['price'])
         if not math.isfinite(price) or price<=0:raise ValueError('Invalid BTC quote')
@@ -103,6 +106,9 @@ class ForecastScheduler:
                                        (m['ticker'],row['scheduled'],row['deadline'],'UP' if p['p_up']>=.5 else 'DOWN',p['p_up'],now,dumps(f),p['model'],'Observed after +65s deadline; separate late cohort, never backdated','UNKNOWN',m['floor_strike'],s['price']))
                         result=dict(db.execute('SELECT * FROM intel_late_locks WHERE ticker=?',(m['ticker'],)).fetchone())
                     if result:
+                        from .v4_models import lock_shadow
+                        ss={**s,'candles1':[{'ts':r[0],'close':r[4]} for r in c.get('candles',[])]}
+                        lock_shadow(db,ss,(self.spot_stream.snapshot(now).get('rows',[]) if self.spot_stream else []))
                         notify.locked(s,result)
                         if result['state']=='LOCKED':
                             candidate=shadow(db,s)

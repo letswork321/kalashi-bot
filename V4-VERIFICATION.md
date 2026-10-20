@@ -1,0 +1,13 @@
+# V4 verification record
+
+This record describes the V4 development release; source verification and platform CI links are supplied in the release response.
+
+- All original V3 tests retained, plus V4 safety/analytics tests. Current local run: 287 tests, 286 passing and the existing native-Windows DPAPI test skipped on Linux. Native Windows runs that test in CI. No new test skips or disabled assertions.
+- Real Chromium + isolated authenticated Waitress: no JavaScript errors, 1m/5m/15m switches, marker OFF/LITE/FULL, RSI/Bands toggles, cents-input position form with99% goal, collapsed research, no390px mobile overflow, and disconnected-state masks passed. Main chart height387px, bottom786.4px on1600×900 display. Screenshot references/v4-real-rest-dashboard.png is genuine REST history with a clearly visible STREAM UNAVAILABLE warning; it is not evidence of successful streaming.
+- Isolated50s public-data run completed with error=null and Telegram disabled. Official Kalshi market/strike/fees and Coinbase candles/trades received. V4 state persisted, the original collector/engines remained healthy. The scheduler reported a genuine BTC_QUOTE_STALE_OR_UNAVAILABLE rejection; no late/false lock was manufactured. Coinbase attempted reconnects and persisted WebSocketProxyException/Upgrade-failed diagnostics. No local laptop statistics were inspected.
+- Official Coinbase/Binance documentation and BLS calendar requests returned403 in this environment. Optional Binance source, authenticated Kalshi book/BRTI, macro actual/consensus and Telegram phone delivery are not verified live.
+- Empty-data CLI export/report and application Python/JavaScript compilation checked. First-passage/model/trade-side/ROI/migration tests use explicit fixtures; none establish75% forecasting accuracy or profitable trading.
+- V4 baseline remains unchanged V3 in production. Gaussian and fitted boosted candidates stay shadow. No model improvement has yet been demonstrated on genuine held-out V4 markets.
+- Original running checkout, user Windows installation, production data and cloud alerts are untouched. No orders, account balances, funds or public deployment are used.
+
+Full source-manifest update/migration/rollback rehearsal passed: 36 existing V3 tables retained their original values, including a seeded legacy GAPPED caller record, credentials and venv markers were preserved, integrity checks passed, and rollback retained post-update data. Linux/Windows GitHub Actions results are linked in the final release response. A green platform job is not evidence of profitable live signals or Windows laptop network access.

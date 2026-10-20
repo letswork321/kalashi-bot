@@ -122,7 +122,7 @@ class IntelligenceWorker:
             self.dispatcher=threading.Thread(target=self.dispatch_alerts,daemon=True,name='telegram-dispatcher');self.dispatcher.start()
             self.observer=threading.Thread(target=self.observe_execution,daemon=True,name='execution-quote-observer');self.observer.start()
             from .v3_runtime import V3Runtime
-            self.v3=V3Runtime(self);collector.spot_stream=self.v3.spot;self.v3.start()
+            self.v3=V3Runtime(self);collector.spot_stream=self.v3.spot;self.scheduler.spot_stream=self.v3.spot;self.v3.start()
             self.maintenance=threading.Thread(target=self.background_research,daemon=True,name='research-model-worker');self.maintenance.start()
             last_settle=last_retention=0;daily=None;radar_last={}
             with ThreadPoolExecutor(max_workers=3,thread_name_prefix='strategy') as pool:

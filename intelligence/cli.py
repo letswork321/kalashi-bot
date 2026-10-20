@@ -9,12 +9,17 @@ from .research import Backfill,report
 def main(argv=None):
     from scanner import HTTP,ROOT
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['backfill','backfill-trades','train','report','run','compare-models','v3-report'])
+    p.add_argument('action',choices=['backfill','backfill-trades','train','report','run','compare-models','v3-report','v4-export','v4-report','v4-train'])
     p.add_argument('--db',type=Path,default=ROOT/'data'/'live.sqlite3')
     p.add_argument('--days',type=int,choices=[7,30,90],default=7)
     p.add_argument('--max-pages',type=int,default=10)
     p.add_argument('--seconds',type=float,default=30)
+    p.add_argument('--output',type=Path)
     a=p.parse_args(argv)
+    if a.action=='v4-export':
+        if not a.output:p.error('v4-export requires --output NEW_FILE.json')
+        from .v4_research import export
+        print(dumps(export(a.db,a.output)));return 0
     if a.action=='run':
         from .service import IntelligenceWorker
         # This diagnostic never starts a Telegram sender or an execution capability.
@@ -24,7 +29,13 @@ def main(argv=None):
         print(dumps({'error':worker.error,'database':str(a.db),'telegram':False}));return 1 if worker.error else 0
     db=migrate(a.db)
     try:
-        if a.action=='compare-models':
+        if a.action=='v4-report':
+            from .v4_runtime import snapshot
+            result=snapshot(db,time.time())
+        elif a.action=='v4-train':
+            from .v4_models import retrain
+            result=retrain(db,time.time())
+        elif a.action=='compare-models':
             from .boosted_models import retrain_comparison
             retrain_comparison(db,time.time());result={'status':'Shadow comparison saved; not promoted'}
         elif a.action=='v3-report':

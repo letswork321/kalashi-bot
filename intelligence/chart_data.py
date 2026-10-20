@@ -72,5 +72,10 @@ def payload(db,timeframe,now,history_cache=None):
         short=candle_rows(ticks,15,now);bars=[r for r in short if not r['partial']]
         if len(bars)<10 or any(b['time']-a['time']!=15 for a,b in zip(bars[-10:],bars[-9:])):return {'status':'UNAVAILABLE','reason':'15s requires >=10 fully observed consecutive tick-built bars; REST cannot manufacture them','candles':[],'indicators':{},'period':period,'source':'Coinbase BTC-USD'}
         lines=indicators(bars)
-    marks=[{'time':int(r['observed']//period)*period,'position':'belowBar' if r['direction']=='UP' else 'aboveBar','shape':'arrowUp' if r['direction']=='UP' else 'arrowDown','color':'#5ee7b0' if r['direction']=='UP' else '#ff7d91','text':r['direction']+' WATCH · '+r['metric']} for r in db.execute('SELECT observed,direction,metric FROM intel_callouts WHERE sent IS NOT NULL AND observed>=? ORDER BY observed LIMIT 100',(bars[0]['time'] if bars else now,))]
+    marks=markers(db,period,bars[0]['time'] if bars else now)
     return {'status':'LIVE' if live else 'STALE' if event else 'REST HISTORY / STREAM UNAVAILABLE','server_time':now,'event_ts':event,'age':age,'source':'Coinbase BTC-USD — NOT official BRTI','timeframe':timeframe,'period':period,'candles':bars,'indicators':lines,'markers':marks,'developing_partial':bool(developing and developing['partial']),'history_revision':candles[-1]['time'] if candles else None,'trade_id':spot.get('last_id'),'gaps':spot.get('gaps',0),'note':'No synthetic bars. Partial last bar shows observed prints only; earlier extremes may be unknown. Missing historical bars are not filled.'}
+
+
+def markers(db,period,start):
+    rows=db.execute('SELECT observed,direction,metric,version,reason FROM intel_callouts WHERE sent IS NOT NULL AND observed>=? ORDER BY observed DESC LIMIT 100',(start,)).fetchall()
+    return [{'time':int(r['observed']//period)*period,'position':'belowBar' if r['direction']=='UP' else 'aboveBar','shape':'arrowUp' if r['direction']=='UP' else 'arrowDown','color':'#5ee7b0' if r['direction']=='UP' else '#ff7d91','text':r['direction']+' WATCH','event_ts':r['observed'],'model':r['version'],'metric':r['metric'],'reason':r['reason']} for r in reversed(rows)]
