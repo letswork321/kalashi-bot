@@ -184,6 +184,7 @@ class Notifications:
         if not self.telegram or not self.telegram.enabled:return
         enabled=self.enabled
         with self.db:
+            self.db.execute("UPDATE intel_alerts SET state='delivery_unknown' WHERE state='sending' AND expires<=?",(now,))
             self.db.execute("UPDATE intel_alerts SET state='expired' WHERE state='pending' AND expires<=?",(now,))
             for r in self.db.execute("SELECT id,category FROM intel_alerts WHERE state='pending'").fetchall():
                 if r['category'] not in enabled:self.db.execute("UPDATE intel_alerts SET state='disabled' WHERE id=?",(r['id'],))
@@ -241,6 +242,17 @@ class Notifications:
                 invalid=invalid or not s or not s.get('book_event_verified') or not (0<=check-s.get('book_ts',0)<=1)
             if r['category']=='settlement' and settlement_sent(self.db,r['ticker']):invalid=True
             if invalid:
+                with self.db:self.db.execute("UPDATE intel_alerts SET state='expired' WHERE id=?",(r['id'],))
+                continue
+            with self.db:
+                claimed=self.db.execute("UPDATE intel_alerts SET state='sending' WHERE id=? AND state='pending'",(r['id'],)).rowcount
+            if not claimed:continue
+            # Writer waits consumed real time; never deliver an expired actionable alert.
+            delivery_now=time.time() if s is not None else now
+            stale=delivery_now>=r['expires']
+            if s is not None and r['category'] not in ('locked','preliminary','settlement','daily','withdrawal'):
+                stale=stale or delivery_now-s.get('quote_ts',0)>3 or delivery_now-s.get('book_ts',0)>3
+            if stale:
                 with self.db:self.db.execute("UPDATE intel_alerts SET state='expired' WHERE id=?",(r['id'],))
                 continue
             try:self.telegram.send(r['message'])

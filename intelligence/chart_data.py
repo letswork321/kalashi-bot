@@ -58,6 +58,9 @@ def payload(db,timeframe,now,history_cache=None):
     row=db.execute("SELECT payload,ts FROM v3_state WHERE name='spot'").fetchone();spot=loads(row['payload']) if row else {}
     event=spot.get('event_ts');age=now-event if event is not None else None
     live=bool(spot.get('status')=='LIVE' and age is not None and 0<=age<=3 and row and 0<=now-row['ts']<=2)
+    observer_age=now-row['ts'] if row else None
+    source_status=spot.get('status','UNAVAILABLE')
+    status='LIVE' if live else source_status if source_status in ('RESYNCING','CLOCK SKEW','CONNECTING','UNAVAILABLE','DISABLED') else 'OBSERVER DELAY' if source_status=='LIVE' and observer_age is not None and observer_age>2 else 'STALE' if event else 'REST HISTORY / STREAM UNAVAILABLE'
     developing=live_bar(db,period,now)
     # An existing partial candle remains visible on disconnection, with a red stale mask.
     bars=list(candles)
@@ -73,7 +76,7 @@ def payload(db,timeframe,now,history_cache=None):
         if len(bars)<10 or any(b['time']-a['time']!=15 for a,b in zip(bars[-10:],bars[-9:])):return {'status':'UNAVAILABLE','reason':'15s requires >=10 fully observed consecutive tick-built bars; REST cannot manufacture them','candles':[],'indicators':{},'period':period,'source':'Coinbase BTC-USD'}
         lines=indicators(bars)
     marks=markers(db,period,bars[0]['time'] if bars else now)
-    return {'status':'LIVE' if live else 'STALE' if event else 'REST HISTORY / STREAM UNAVAILABLE','server_time':now,'event_ts':event,'age':age,'source':'Coinbase BTC-USD — NOT official BRTI','timeframe':timeframe,'period':period,'candles':bars,'indicators':lines,'markers':marks,'developing_partial':bool(developing and developing['partial']),'history_revision':candles[-1]['time'] if candles else None,'trade_id':spot.get('last_id'),'gaps':spot.get('gaps',0),'note':'No synthetic bars. Partial last bar shows observed prints only; earlier extremes may be unknown. Missing historical bars are not filled.'}
+    return {'status':status,'verification_reason':spot.get('verification_reason'),'observer_age':observer_age,'server_time':now,'event_ts':event,'age':age,'source':'Coinbase BTC-USD — NOT official BRTI','timeframe':timeframe,'period':period,'candles':bars,'indicators':lines,'markers':marks,'developing_partial':bool(developing and developing['partial']),'history_revision':candles[-1]['time'] if candles else None,'trade_id':spot.get('last_id'),'gaps':spot.get('gaps',0),'note':'No synthetic bars. Partial last bar shows observed prints only; earlier extremes may be unknown. Missing historical bars are not filled.'}
 
 
 def markers(db,period,start):

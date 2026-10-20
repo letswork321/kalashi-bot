@@ -67,14 +67,19 @@ class Liquidations:
                     for event in msg if isinstance(msg,list) else [msg]:self.apply(event,time.time())
             except Exception as exc:self.state='UNAVAILABLE — '+type(exc).__name__
             finally:
-                if self.ws:self.ws.close();self.ws=None
+                if self.ws:
+                    try:self.ws.close()
+                    except Exception:pass
+                    self.ws=None
             self.stop.wait(5)
     def snapshot(self,now):
         with self.lock:rows=[r for r in self.rows if now-r['event']<=60]
         return {'status':self.state,'observed':rows,'coverage':'At most latest liquidation order per symbol per 1000ms on Binance USD-M; excludes other venues and unreported events','interpretation':'No events received is not proof that no liquidations occurred','open_interest':None,'funding':None}
     def close(self):
         self.stop.set()
-        if self.ws:self.ws.close()
+        if self.ws:
+            try:self.ws.close()
+            except Exception:pass
         if self.thread:self.thread.join(timeout=1)
 
 

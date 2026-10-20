@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import time
+from time import monotonic as decision_time
 
 ET = ZoneInfo('America/New_York')
 SCHEMA = '''
@@ -53,14 +54,8 @@ CREATE TABLE IF NOT EXISTS intel_hourly(hour_utc REAL PRIMARY KEY,n INTEGER,spre
 '''
 
 def connect(path, readonly=False):
-    path = Path(path).resolve()
-    if not readonly:
-        path.parent.mkdir(parents=True,exist_ok=True)
-    db=sqlite3.connect(path.as_uri()+'?mode=ro' if readonly else path,uri=readonly,timeout=15)
-    db.row_factory=sqlite3.Row
-    db.execute('PRAGMA busy_timeout=15000')
-    if not readonly: db.execute('PRAGMA journal_mode=WAL')
-    return db
+    from sqlite_runtime import open_database
+    return open_database(path,readonly)
 
 def backup_database(path, destination=None):
     path=Path(path).resolve()
@@ -170,12 +165,14 @@ def register_market(db,m,seen,track=True):
     return True
 
 def lock_forecast(db,m,p,now,features,regime,entries=None,multiplier=1):
+    decision_clock=decision_time()
     row=db.execute('SELECT * FROM intel_locks WHERE ticker=?',(m['ticker'],)).fetchone()
     if not row or row['state']!='PENDING' or now<row['scheduled']:return None
     try:probability=float(p['p_up']) if p else None
     except (TypeError,ValueError,KeyError):probability=None
-    valid=(now<=row['deadline'] and p and probability is not None and math.isfinite(probability) and 0<=probability<=1 and p.get('observed_at',0)>=row['scheduled'] and 0<=now-p.get('btc_timestamp',0)<=2 and m.get('floor_strike') is not None)
     with db:
+        now=now+max(0,decision_time()-decision_clock)
+        valid=(now<=row['deadline'] and p and probability is not None and math.isfinite(probability) and 0<=probability<=1 and p.get('observed_at',0)>=row['scheduled'] and 0<=now-p.get('btc_timestamp',0)<=2 and m.get('floor_strike') is not None)
         if not valid:
             if now>row['deadline']:db.execute("UPDATE intel_locks SET state='MISSED',reason='No valid on-time live forecast' WHERE ticker=? AND state='PENDING'",(m['ticker'],))
             return None

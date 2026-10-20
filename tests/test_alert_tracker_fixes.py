@@ -93,7 +93,9 @@ class SettingsAndAlertTests(Base):
         self.n.signals(s,[],{'rows':[]},scalp_radar(s));self.assertEqual(self.db.execute('SELECT count(*) FROM intel_alerts').fetchone()[0],3)
     def test_late_delivery_ack_is_not_backdated_into_entry(self):
         s=self.fast();self.scalp_queue(s)
-        with patch('intelligence.notifications.time.time',side_effect=[s['now'],s['now']+4,s['now']+4,s['now']+4]):self.n.flush(s['now'],s)
+        clock={'now':s['now']}
+        self.telegram.send.side_effect=lambda message:clock.update(now=s['now']+4)
+        with patch('intelligence.notifications.time.time',side_effect=lambda:clock['now']):self.n.flush(s['now'],s)
         r=self.db.execute('SELECT * FROM intel_alert_evidence WHERE sent IS NOT NULL').fetchone();self.assertEqual(r['evaluation'],'DELIVERED_LATE_NO_ENTRY')
         self.n.evaluate_delivered(s);self.assertEqual(self.db.execute('SELECT count(*) FROM intel_sim').fetchone()[0],0)
     def test_stale_queued_scalp_is_not_delivered(self):

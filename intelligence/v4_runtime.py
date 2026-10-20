@@ -1,6 +1,8 @@
 """Independent V4 research thread plus bounded fast observations; no trading code."""
 import threading,time
 import requests
+from .recovery import resilient
+from sqlite_runtime import health_write,rollback
 from .storage import migrate,dumps,loads
 from .v4_analysis import analyze
 from .early_exit import settings
@@ -14,6 +16,7 @@ class Runtime:
     def __init__(self,owner):self.owner=owner;self.last=0;self.last_event={};self.previous=None;self.stop=threading.Event();self.thread=None;self.liquidations=Liquidations();self.started=time.time();self.forecasts={};self.forecast_at=0
     def start(self):
         self.liquidations.start();self.thread=threading.Thread(target=self.research,daemon=True,name='v4-background-research');self.thread.start()
+    @resilient
     def research(self):
         db=migrate(self.owner.path);trained=calendar=0
         try:
@@ -27,9 +30,9 @@ class Runtime:
                         try:
                             r=requests.get(BLS,timeout=(2,3));r.raise_for_status();save_calendar(db,r.text,now)
                         except (requests.RequestException,ValueError):
-                            with db:db.execute('INSERT INTO v4_health(observed,source,state,payload) VALUES(?,?,?,?)',(now,'BLS calendar','UNAVAILABLE',dumps({'reason':'Official calendar access failed; no event influence fabricated'})))
+                            with health_write(db) as health:health.execute('INSERT INTO v4_health(observed,source,state,payload) VALUES(?,?,?,?)',(now,'BLS calendar','UNAVAILABLE',dumps({'reason':'Official calendar access failed; no event influence fabricated'})))
                 except Exception as exc:
-                    with db:db.execute('INSERT INTO v4_health(observed,source,state,payload) VALUES(?,?,?,?)',(now,'research','ERROR',dumps({'type':type(exc).__name__})))
+                    with health_write(db) as health:health.execute('INSERT INTO v4_health(observed,source,state,payload) VALUES(?,?,?,?)',(now,'research','ERROR',dumps({'type':type(exc).__name__})))
                 self.stop.wait(15)
         finally:db.close()
     def step(self,db,s,ticks,spot,notify):
@@ -70,7 +73,7 @@ Goal {position['target_roi']:.0%}; not a sale. {position.get('fee_basis') or 'Su
                 f=a['flip'];notify.enqueue('flip',s['market']['ticker'],f"v4-flip:{s['market']['ticker']}:{side}:{int(now//300)}",f"FLIP WATCH · {side}\n{'; '.join(f['evidence'])}\nAsk ${f['ask']:.3f}; gross SETTLEMENT payout {f['gross_settlement_multiplier']:.2f}x, not cash-out ROI.\nTarget unvalidated; spread ${f['spread']:.3f}; {f['remaining']:.0f}s left; book age {now-s['book_event_ts']:.1f}s. Manual only.""",now,now+5)
             # Extreme Move Radar deliberately has NO notification branch/category.
         if int(now)%5==0:
-            with db:db.execute('INSERT INTO v4_health(observed,source,state,payload) VALUES(?,?,?,?)',(now,'Coinbase',spot['status'],dumps({k:spot.get(k) for k in ('age','last_id','gaps','rejected','error','reconnects','heartbeat')})))
+            with health_write(db) as health:health.execute('INSERT INTO v4_health(observed,source,state,payload) VALUES(?,?,?,?)',(now,'Coinbase',spot['status'],dumps({k:spot.get(k) for k in ('age','last_id','gaps','rejected','error','reconnects','heartbeat')})))
         self.endpoints(db,ticks,now)
         for warning in db.execute("SELECT id,observed,side,payload FROM v4_events WHERE result IS NULL AND observed+60<=? AND side IS NOT NULL ORDER BY id LIMIT 100",(now,)).fetchall():
             due=warning['observed']+60

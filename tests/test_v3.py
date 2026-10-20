@@ -56,7 +56,7 @@ class TapeTests(unittest.TestCase):
   t.apply(message(2,NOW+.1),NOW+.1);self.assertEqual(t.snapshot(NOW+.2)['status'],'LIVE');self.assertEqual(t.snapshot(NOW+4)['status'],'STALE')
  def test_out_of_order_duplicate_gap_and_clock_skew(self):
   t=TradeTape();t.apply(message(1),NOW);t.apply(message(2,NOW+.1),NOW+.1)
-  self.assertIsNone(t.apply(message(2),NOW+.2));t.apply(message(5,NOW+.3),NOW+.3);self.assertEqual(t.gaps,1);self.assertNotEqual(t.snapshot(NOW+.3)['status'],'LIVE')
+  self.assertIsNone(t.apply(message(2),NOW+.2));t.apply(message(5,NOW+.3),NOW+.3);self.assertEqual(t.gaps,0);self.assertEqual(t.snapshot(NOW+.3)['status'],'RESYNCING');self.assertNotEqual(t.snapshot(NOW+.6)['status'],'LIVE');self.assertEqual(t.gaps,1)
   self.assertIsNone(t.apply(message(6,NOW+20),NOW));self.assertEqual(t.rejected,1)
  def test_reconnect_requires_new_sequence(self):
   t=TradeTape();t.apply(message(1),NOW);t.apply(message(2,NOW+.1),NOW+.1);t.reset();self.assertNotEqual(t.snapshot(NOW+.1)['status'],'LIVE')

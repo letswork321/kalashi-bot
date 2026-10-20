@@ -1,6 +1,8 @@
 """Fast V3 observer. Socket threads collect; this owner persists observed events.
 Research, slow REST discovery and Telegram POSTs cannot block socket reception.
 """
+from .recovery import resilient
+from sqlite_runtime import health_write,rollback
 from datetime import datetime,timezone
 from pathlib import Path
 import threading
@@ -68,6 +70,7 @@ class V3Runtime:
             try:s['baseline']=analyze(s['market']['raw'],s['book'],Feed(s['price'],s['quote_ts'],[[r[k] for k in ('ts','low','high','open','close','volume')] for r in s['candles1']]),now,Config(),s['fee_multiplier'])
             except (ValueError,DataError):pass
         return s
+    @resilient
     def run(self):
         db=migrate(self.owner.path);notify=Notifications(db,self.owner.telegram);bid=BidResearch(db);last_retention=0;last_book=None
         try:
@@ -77,14 +80,19 @@ class V3Runtime:
                     with self.lock:history=dict(self.history)
                     for period,(received,rows) in history.items():
                         if self.last_history.get(period)==received:continue
-                        self.last_history[period]=received
                         with db:
                             db.executemany("INSERT OR REPLACE INTO intel_candles(source,period,ts,low,high,open,close,volume,received) VALUES('coinbase',?,?,?,?,?,?,?,?)",[(period,*r,received) for r in rows])
                             db.executemany("INSERT OR REPLACE INTO v3_candle_provenance VALUES(?,?,'Coinbase REST completed candle',NULL,NULL)",[(period,r[0]) for r in rows])
-                    spot=self.spot.snapshot(now);new=[r for r in spot['rows'] if self.last_tick is None or r['id']>self.last_tick]
+                        self.last_history[period]=received
+                    # History persistence may have waited on a writer; sample the socket
+                    # using its current clock, never the loop's pre-wait timestamp.
+                    spot=self.spot.snapshot();now=time.time();new=[r for r in spot['rows'] if self.last_tick is None or r['id']>self.last_tick]
                     if new:
-                        with db:db.executemany('INSERT OR IGNORE INTO v3_ticks VALUES(?,?,?,?,?,?,?)',[(r['source'],str(r['id']),r['ts'],r['received'],r['price'],r['size'],int(r['continuous'])) for r in new])
-                        with db:db.executemany('INSERT OR IGNORE INTO intel_btc_trades VALUES(?,?,?,?,?)',[(r['id'],r['ts'],r['price'],r['size'],r['received']) for r in new])
+                        for offset in range(0,len(new),500):
+                            batch=new[offset:offset+500]
+                            with db:
+                                db.executemany('INSERT OR IGNORE INTO v3_ticks VALUES(?,?,?,?,?,?,?)',[(r['source'],str(r['id']),r['ts'],r['received'],r['price'],r['size'],int(r['continuous'])) for r in batch])
+                                db.executemany('INSERT OR IGNORE INTO intel_btc_trades VALUES(?,?,?,?,?)',[(r['id'],r['ts'],r['price'],r['size'],r['received']) for r in batch])
                         certify_trades(db,new,spot['rows'])
                         self.last_tick=new[-1]['id']
                         for period in (60,300,900):
@@ -142,7 +150,7 @@ class V3Runtime:
                             db.execute('DELETE FROM v3_contract_samples WHERE observed<?',(now-90*86400,))
                         last_retention=now
                 except Exception as exc:
-                    with db:db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('v3_observer',now,dumps({'ok':False,'reason':type(exc).__name__+': '+str(exc)[:160]})))
+                    with health_write(db) as health:health.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('v3_observer',now,dumps({'ok':False,'reason':type(exc).__name__+': '+str(exc)[:160]})))
                 self.stop.wait(.2)
         finally:db.close()
     def close(self):

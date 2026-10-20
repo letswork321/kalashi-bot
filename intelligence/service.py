@@ -1,4 +1,6 @@
 """Background coordinator; SQLite connections belong to their own threads."""
+from .recovery import resilient
+from sqlite_runtime import health_write,rollback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +25,10 @@ class IntelligenceWorker:
         self.thread=threading.Thread(target=self.run,name='intelligence-collector',daemon=True);self.thread.start()
     def close(self):
         self.stop.set();self.stream.close()
+        if self.scheduler:self.scheduler.close()
+        if self.v3:self.v3.close()
         if self.thread:self.thread.join(timeout=3)
+    @resilient
     def dispatch_alerts(self):
         db=migrate(self.path);notify=Notifications(db,self.telegram)
         try:
@@ -32,9 +37,10 @@ class IntelligenceWorker:
                     notify.withdraw({'now':time.time(),'market':{'ticker':''}},[],expired_only=True)
                     notify.flush(time.time(),self.latest_snapshot)
                 except Exception:
-                    with db:db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('alert_dispatcher',time.time(),dumps({'ok':False,'reason':'Delivery unavailable; credentials redacted'})))
+                    with health_write(db) as health:health.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('alert_dispatcher',time.time(),dumps({'ok':False,'reason':'Delivery unavailable; credentials redacted'})))
                 self.stop.wait(.2)
         finally:db.close()
+    @resilient
     def observe_execution(self):
         """Fast, network-free observer; research HTTP cannot hide delivery-time quotes."""
         from .economics import evaluate_flips
@@ -72,9 +78,10 @@ class IntelligenceWorker:
                         db.execute("UPDATE intel_sim SET state='CANCELLED',reason='Entry observation deadline missed' WHERE state='PENDING_ENTRY' AND entry_due+3<?",(now,))
                         db.execute("UPDATE intel_sim SET state='MISSED_EXIT',reason='Exit observation missed; no fabricated exit' WHERE state='OPEN' AND exit_due+3<?",(now,))
                 except Exception as exc:
-                    with db:db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('execution_observer',now,dumps({'ok':False,'reason':type(exc).__name__})))
+                    with health_write(db) as health:health.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('execution_observer',now,dumps({'ok':False,'reason':type(exc).__name__})))
                 self.stop.wait(.2)
         finally:db.close()
+    @resilient
     def background_research(self):
         from scanner import HTTP
         db=migrate(self.path)
@@ -100,11 +107,13 @@ class IntelligenceWorker:
                     last=now
                 self.stop.wait(15)
         except Exception as exc:
-            with db:db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('research_worker',time.time(),dumps({'ok':False,'reason':type(exc).__name__})))
+            with health_write(db) as health:health.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('research_worker',time.time(),dumps({'ok':False,'reason':type(exc).__name__})))
+            raise
         finally:db.close()
     def reconcile(self,db,collector,sim,notify,now):
         rows=db.execute("SELECT ticker FROM intel_markets WHERE closed<? AND result IS NULL ORDER BY closed DESC LIMIT 50",(now,)).fetchall()
         for row in rows:
+            if self.stop.is_set():break
             try:
                 m=collector.k.market(row['ticker']);old=db.execute('SELECT result FROM intel_markets WHERE ticker=?',(row['ticker'],)).fetchone()
                 register_market(db,m,now);sim.settle(m,now)
@@ -136,6 +145,7 @@ class IntelligenceWorker:
                             db.execute("UPDATE intel_reversals SET state='MISSED',reason='10-minute quote observation missed' WHERE state='PENDING' AND target+3<?",(begin,))
                             db.execute("UPDATE intel_reversals SET outcome='MISSED' WHERE state='OBSERVED' AND band IS NOT NULL AND outcome IS NULL AND outcome_target+3<?",(begin,))
                         s=collector.snapshot();s['now']=time.time()
+                        if self.stop.is_set():break
                         callouts.observe(db,s['now'],s.get('quote_ts'),s.get('price'))
                         regime=regime_detector(s);s['regime']=regime
                         active_callout=callouts.build(s)
@@ -187,7 +197,7 @@ class IntelligenceWorker:
                         collector.health('intelligence_worker',True,'Collector and independent engines running; availability gates apply',time.time())
                     except Exception as exc:
                         self.error=type(exc).__name__+': '+str(exc)[:200]
-                        with db:db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('intelligence_worker',time.time(),dumps({'ok':False,'reason':self.error})))
+                        with health_write(db) as health:health.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('intelligence_worker',time.time(),dumps({'ok':False,'reason':self.error})))
                     self.stop.wait(max(.05,1-(time.time()-begin)))
         except Exception as exc:
             self.error=type(exc).__name__+': '+str(exc)[:200]

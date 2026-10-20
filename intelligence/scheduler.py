@@ -1,6 +1,8 @@
 """Dedicated forecast clock and independent short-timeout input workers.
 No research, fee lookup, settlement request, Telegram POST or network wait runs on the clock.
 """
+from .recovery import resilient
+from sqlite_runtime import health_write,rollback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 import math
@@ -118,7 +120,8 @@ class ForecastScheduler:
         # Finalize deadlines even during quote failure; old MISSED decisions stay immutable.
         with db:db.execute("UPDATE intel_locks SET state='MISSED',reason='Independent scheduler: no valid observation before +65s; see attempt log' WHERE state='PENDING' AND deadline<?",(now,))
         notify.preliminary(c,now)
-        with db:db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('forecast_scheduler',now,dumps({'ok':s is not None,'reason':reason or 'Independent clock active; fresh inputs available','inputs':{k:v for k,v in c.items() if k.endswith('_error') and v}})))
+        with health_write(db) as health:health.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('forecast_scheduler',now,dumps({'ok':s is not None,'reason':reason or 'Independent clock active; fresh inputs available','inputs':{k:v for k,v in c.items() if k.endswith('_error') and v}})))
+    @resilient
     def run(self):
         db=migrate(self.path);notify=Notifications(db,self.telegram)
         try:
@@ -126,7 +129,7 @@ class ForecastScheduler:
                 now=time.time()
                 try:self.tick(db,now,notify)
                 except Exception as exc:
-                    with db:db.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('forecast_scheduler',now,dumps({'ok':False,'reason':type(exc).__name__+': '+str(exc)[:180]})))
+                    with health_write(db) as health:health.execute('INSERT OR REPLACE INTO intel_health VALUES(?,?,?)',('forecast_scheduler',now,dumps({'ok':False,'reason':type(exc).__name__+': '+str(exc)[:180]})))
                 self.stop.wait(.2 if 58<=now%900<=121 else 1)
         finally:db.close()
     def close(self):

@@ -329,10 +329,10 @@ class Store:
     def __init__(self, path, mode='live'):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
+        from sqlite_runtime import open_database
+        self.db = open_database(path)
         try:
             self.db.row_factory = sqlite3.Row
-            self.db.execute('PRAGMA journal_mode=WAL')
             self.db.executescript('''
             CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS predictions(
@@ -707,8 +707,12 @@ def main(argv=None):
         return 0 if checks['ready_for_prediction'] else 1
     db = ROOT/'data'/'mock.sqlite3' if args.mock else args.db
     upgrade_worker = None
-    store = Store(db,'mock' if args.mock else 'live')
+    lock = None
+    store = None
     try:
+        db.parent.mkdir(parents=True,exist_ok=True)
+        if not (args.mock or args.report):lock=acquire_lock(db)
+        store = Store(db,'mock' if args.mock else 'live')
         if args.report:
             emit(store.report())
             return 0
@@ -722,26 +726,33 @@ def main(argv=None):
             emit(p)
             return 0
         # One live scanner per database, including across deployment workers/restarts.
-        lock = acquire_lock(db)
         engine = Engine(store,config,Telegram())
         if args.settle:
             engine.reconcile(time.time())
             emit(store.report())
             return 0
         if not args.once and os.environ.get('INTELLIGENCE_ENABLED','true').lower() == 'true':
-            from intelligence.service import IntelligenceWorker
-            upgrade_worker = IntelligenceWorker(db, engine.telegram)
+            from intelligence.recovery import Supervisor
+            upgrade_worker = Supervisor(db, engine.telegram)
             upgrade_worker.start()
         emit({'mode':'LIVE READ-ONLY','model':MODEL,'telegram_enabled':engine.telegram.enabled,
               'database':str(db),'trade_execution':False})
         while True:
-            p = engine.cycle()
+            try:p = engine.cycle()
+            except sqlite3.Error as exc:
+                from sqlite_runtime import busy,rollback
+                rollback(store.db)
+                if not busy(exc):raise
+                emit({'storage':'BUSY — retrying next cycle','signal':'NO TRADE','reason':'Database write unavailable; no prediction or fill fabricated','trade_execution':False})
+                if args.once:return 1
+                time.sleep(min(2,config.poll));continue
             if args.once:
                 return 0 if p.get('p_up') is not None else 1
             time.sleep(config.poll)
     finally:
         if upgrade_worker: upgrade_worker.close()
-        store.db.close()
+        if store:store.db.close()
+        if lock:lock.close()
 
 if __name__ == '__main__':
     try:

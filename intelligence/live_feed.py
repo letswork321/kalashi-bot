@@ -18,30 +18,64 @@ def proxy_options():
     return out
 
 class TradeTape:
+    REORDER_SECONDS=.25
+    MAX_PENDING=256
     def __init__(self):
-        self.rows=deque(maxlen=30000);self.last_id=None;self.epoch=0;self.gaps=0;self.last_received=0;self.status='CONNECTING';self.rejected=0;self.heartbeat=None;self.error=None;self.reconnects=0
+        self.rows=deque(maxlen=30000);self.last_id=None;self.epoch=0;self.gaps=0;self.last_received=0;self.status='CONNECTING';self.rejected=0;self.heartbeat=None;self.error=None;self.reconnects=0;self.pending={};self.gap_since=None;self.last_gap=None;self.duplicates=0
     def reset(self):
-        self.epoch+=1;self.last_id=None;self.status='RESYNCING'
+        self.epoch+=1;self.last_id=None;self.last_received=0;self.heartbeat=None;self.pending.clear();self.gap_since=None;self.status='RESYNCING'
+    def _append(self,row,continuous):
+        row.update(epoch=self.epoch,continuous=continuous)
+        self.rows.append(row);self.last_id=row['id'];self.last_received=row['received'];self.status='STREAMING' if continuous else 'RESYNCING'
+    def _drain(self,now):
+        while self.last_id is not None and self.last_id+1 in self.pending:
+            row=self.pending.pop(self.last_id+1)
+            continuous=bool(self.rows and self.rows[-1]['epoch']==self.epoch and row['ts']>=self.rows[-1]['ts'])
+            if not continuous:
+                self.gaps+=1;self.epoch+=1;self.last_gap={'reason':'EVENT_TIME_REGRESSION','id':row['id'],'received':row['received']}
+            self._append(row,continuous)
+        if self.pending:
+            if self.gap_since is None:self.gap_since=now
+            self.status='RESYNCING'
+            if now-self.gap_since>=self.REORDER_SECONDS or len(self.pending)>=self.MAX_PENDING:
+                key=min(self.pending);row=self.pending.pop(key)
+                self.last_gap={'reason':'MISSING_TRADE_IDS','expected':self.last_id+1,'received_id':key,'received':row['received']}
+                self.gaps+=1;self.epoch+=1;self._append(row,False);self.gap_since=None;self._drain(now)
+        else:self.gap_since=None
     def apply(self,msg,received):
         if msg.get('type')=='heartbeat' and msg.get('product_id')=='BTC-USD':
-            try:self.heartbeat={'event':datetime.fromisoformat(msg['time'].replace('Z','+00:00')).timestamp(),'received':received,'last_id':int(msg['last_trade_id'])}
+            try:
+                stamp=datetime.fromisoformat(msg['time'].replace('Z','+00:00'))
+                if stamp.tzinfo is None:raise ValueError('Missing timezone')
+                event=stamp.timestamp();identifier=int(msg['last_trade_id'])
+                if not math.isfinite(event+received) or event>received+1:raise ValueError('Invalid clock')
+                self.heartbeat={'event':event,'received':received,'last_id':identifier}
             except (KeyError,ValueError,TypeError):self.rejected+=1
             return None
         if msg.get('product_id')!='BTC-USD' or msg.get('type') not in ('match','last_match'):return None
         try:
-            event=datetime.fromisoformat(msg['time'].replace('Z','+00:00')).timestamp()
-            price,size=float(msg['price']),float(msg['size']);identifier=int(msg['trade_id'])
-            if not math.isfinite(price+size+event) or price<=0 or size<=0 or event>received+1:raise ValueError('Clock or value invalid')
+            stamp=datetime.fromisoformat(msg['time'].replace('Z','+00:00'))
+            if stamp.tzinfo is None:raise ValueError('Missing timezone')
+            event=stamp.timestamp();price,size=float(msg['price']),float(msg['size']);identifier=int(msg['trade_id'])
+            if not math.isfinite(price+size+event+received) or price<=0 or size<=0 or identifier<0 or event>received+1:raise ValueError('Clock or value invalid')
         except (KeyError,ValueError,TypeError):self.rejected+=1;return None
-        if self.last_id is not None and identifier<=self.last_id:return None
-        continuous=self.last_id is not None and identifier==self.last_id+1 and bool(self.rows) and self.rows[-1]['epoch']==self.epoch and event>=self.rows[-1]['ts'] and event-self.rows[-1]['ts']<=3
-        if self.last_id is not None and not continuous:self.gaps+=1;self.epoch+=1
-        row={'id':identifier,'ts':event,'received':received,'price':price,'size':size,'epoch':self.epoch,'continuous':continuous,'side':msg.get('side'),'source':'Coinbase WebSocket'}
-        self.rows.append(row);self.last_id=identifier;self.last_received=received;self.status='STREAMING' if continuous else 'RESYNCING';return row
+        if msg['type']=='last_match' and self.last_id is not None:return None
+        if self.last_id is not None and (identifier<=self.last_id or identifier in self.pending):self.duplicates+=1;return None
+        row={'id':identifier,'ts':event,'received':received,'price':price,'size':size,'side':msg.get('side'),'source':'Coinbase WebSocket'}
+        if self.last_id is None:self._append(row,False);return row
+        old=self.last_id;self.pending[identifier]=row;self._drain(received)
+        return self.rows[-1] if self.last_id!=old else None
     def snapshot(self,now):
-        last=self.rows[-1] if self.rows else None
-        fresh=bool(last and 0<=now-last['ts']<=3 and 0<=now-self.last_received<=3 and self.status=='STREAMING')
-        return {'source':'Coinbase BTC-USD WebSocket','status':'LIVE' if fresh else 'STALE' if last else self.status,'event_ts':last['ts'] if last else None,'received_ts':self.last_received or None,'age':now-last['ts'] if last else None,'price':last['price'] if last else None,'gaps':self.gaps,'epoch':self.epoch,'rejected':self.rejected,'rows':list(self.rows),'last_id':self.last_id,'heartbeat':self.heartbeat,'error':self.error,'reconnects':self.reconnects}
+        self._drain(now)
+        last=self.rows[-1] if self.rows and self.rows[-1]['epoch']==self.epoch else None
+        fresh=bool(last and 0<=now-last['ts']<=3 and 0<=now-self.last_received<=3)
+        if self.status in ('UNAVAILABLE','DISABLED','CONNECTING'):status=self.status
+        elif last and last['ts']>now:status='CLOCK SKEW'
+        elif fresh and self.status=='STREAMING' and not self.pending:status='LIVE'
+        elif fresh:status='RESYNCING'
+        else:status='STALE' if last else self.status
+        reason='Verified consecutive trade IDs and fresh event/receipt times' if status=='LIVE' else 'Trade-ID continuity being verified' if status=='RESYNCING' else 'Source event is ahead of the local clock; verify Windows time synchronization' if status=='CLOCK SKEW' else 'No current verified quote'
+        return {'source':'Coinbase BTC-USD WebSocket','status':status,'verification_reason':reason,'event_ts':last['ts'] if last else None,'received_ts':self.last_received or None,'age':now-last['ts'] if last else None,'price':last['price'] if last else None,'gaps':self.gaps,'last_gap':self.last_gap,'pending_ids':len(self.pending),'duplicates':self.duplicates,'epoch':self.epoch,'rejected':self.rejected,'rows':list(self.rows),'last_id':self.last_id,'heartbeat':self.heartbeat,'error':self.error,'reconnects':self.reconnects}
 
 class CoinbaseStream:
     def __init__(self):
@@ -57,11 +91,21 @@ class CoinbaseStream:
                 self.ws=websocket.create_connection(URL,timeout=5,**proxy_options())
                 self.ws.send(json.dumps({'type':'subscribe','product_ids':['BTC-USD'],'channels':['matches','heartbeat']}))
                 with self.lock:self.tape.reset();self.tape.error=None
-                delay=1
+                connected=time.monotonic()
                 while not self.stop.is_set():
                     message=json.loads(self.ws.recv())
                     if message.get('type')=='error':raise ValueError('Subscription rejected')
-                    with self.lock:self.tape.apply(message,time.time())
+                    received=time.time()
+                    with self.lock:
+                        self.tape.apply(message,received)
+                        last=self.tape.last_received
+                        session_age=time.monotonic()-connected
+                        stale=last and received-last>10
+                        silent=not last and session_age>10
+                        heartbeat=self.tape.heartbeat
+                        missing=heartbeat and heartbeat['last_id']>(self.tape.last_id or 0) and session_age>10 and (not last or received-last>3)
+                    if stale or silent or missing:raise TimeoutError('Trade stream stalled; resubscribe required')
+                    if session_age>=30:delay=1
             except Exception as exc:
                 with self.lock:
                     self.tape.reset();self.tape.status='UNAVAILABLE';self.tape.reconnects+=1
