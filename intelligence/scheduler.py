@@ -26,13 +26,16 @@ class ShortHTTP(HTTP):
 
 class ForecastScheduler:
     def __init__(self,path,telegram=None):
-        self.path=path;self.telegram=telegram;self.stop=threading.Event();self.lock=threading.Lock();self.cache={};self.threads=[];self.spot_stream=None
+        self.path=path;self.telegram=telegram;self.stop=threading.Event();self.lock=threading.Lock();self.cache={};self.threads=[];self.spot_stream=None;self.brti_stream=None;self.v5=None
     def put(self,name,value):
         with self.lock:self.cache[name]=value
     def start(self):
-        for name,fn in [('metadata',self.metadata),('candles',self.candles),('quote',self.quote),('book',self.book)]:
+        for name,fn in [('metadata',self.metadata),('candles',self.candles),('quote',self.quote),('book',self.book),('v5candles',self.v5candles)]:
             thread=threading.Thread(target=self.feed,args=(name,fn),daemon=True,name='forecast-'+name);thread.start();self.threads.append(thread)
         t=threading.Thread(target=self.run,daemon=True,name='forecast-clock');t.start();self.threads.append(t)
+        if __import__('os').environ.get('BTC_PRO_V5')=='true':
+            from .v5_runtime import Runtime
+            self.v5=Runtime(self);self.v5.start()
     def feed(self,name,fn):
         http=ShortHTTP()
         while not self.stop.is_set():
@@ -40,6 +43,10 @@ class ForecastScheduler:
             except Exception as exc:self.put(name+'_error',type(exc).__name__+': '+str(exc)[:180])
             now=time.time();elapsed=now%900
             urgent=45<=elapsed<=125
+            if __import__('os').environ.get('BTC_PRO_V5')=='true':
+                with self.lock:current=(self.cache.get('metadata') or {}).get('current')
+                if current:
+                    phase=now-timestamp(current['open_time']);urgent=any(c-15<=phase<=c+6 for c in (60,180,300,600))
             self.stop.wait((.3 if urgent else 2) if name in ('quote','book') else 5 if name=='metadata' else 20)
     def metadata(self,http):
         now=time.time()
@@ -54,6 +61,12 @@ class ForecastScheduler:
     def candles(self,http):
         now=time.time();iso=lambda t:datetime.fromtimestamp(t,timezone.utc).isoformat()
         self.put('candles',http.get(COINBASE,'/products/BTC-USD/candles',{'granularity':60,'start':iso(now-180*60),'end':iso(now)}))
+    def v5candles(self,http):
+        if __import__('os').environ.get('BTC_PRO_V5')!='true':return
+        now=time.time();iso=lambda t:datetime.fromtimestamp(t,timezone.utc).isoformat()
+        rows={}
+        for period in (300,900):rows[period]=http.get(COINBASE,'/products/BTC-USD/candles',{'granularity':period,'start':iso(now-period*100),'end':iso(now)})
+        self.put('v5candles',rows)
     def quote(self,http):
         live=self.spot_stream.snapshot() if self.spot_stream else None
         if live and live['status']=='LIVE':
@@ -134,4 +147,5 @@ class ForecastScheduler:
         finally:db.close()
     def close(self):
         self.stop.set()
+        if self.v5:self.v5.close()
         for t in self.threads:t.join(timeout=.2)

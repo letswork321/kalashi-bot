@@ -127,11 +127,11 @@ class IntelligenceWorker:
         try:
             db=migrate(self.path);callouts.ensure(db);collector=Collector(db,self.stream);sim=Simulator(db);notify=Notifications(db,self.telegram);self.stream.start()
             from .scheduler import ForecastScheduler
-            self.scheduler=ForecastScheduler(self.path,self.telegram);self.scheduler.start()
+            self.scheduler=ForecastScheduler(self.path,self.telegram);self.scheduler.owner=self;self.scheduler.start()
             self.dispatcher=threading.Thread(target=self.dispatch_alerts,daemon=True,name='telegram-dispatcher');self.dispatcher.start()
             self.observer=threading.Thread(target=self.observe_execution,daemon=True,name='execution-quote-observer');self.observer.start()
             from .v3_runtime import V3Runtime
-            self.v3=V3Runtime(self);collector.spot_stream=self.v3.spot;self.scheduler.spot_stream=self.v3.spot;self.v3.start()
+            self.v3=V3Runtime(self);collector.spot_stream=self.v3.spot;self.scheduler.spot_stream=self.v3.spot;self.scheduler.brti_stream=self.v3.brti;self.v3.start()
             self.maintenance=threading.Thread(target=self.background_research,daemon=True,name='research-model-worker');self.maintenance.start()
             last_settle=last_retention=0;daily=None;radar_last={}
             with ThreadPoolExecutor(max_workers=3,thread_name_prefix='strategy') as pool:

@@ -89,7 +89,7 @@ def snapshot():
 
 @app.get('/')
 def index():
-    return render_template('dashboard.html')
+    return render_template('dashboard.html',v5=os.environ.get('BTC_PRO_V5')=='true')
 
 @app.get('/api/state')
 def state():
@@ -281,3 +281,50 @@ def v4_positions():
 if __name__ == '__main__':
     # Local testing only; production uses gunicorn in start.sh.
     app.run(host='127.0.0.1',port=8000,debug=False)
+
+@app.get('/api/v5/state')
+def v5_state():
+    db=None
+    selection=request.args.get('range','all')
+    if selection not in ('today','7','30','all'):return jsonify({'error':'Invalid range'}),400
+    try:
+        from intelligence.storage import connect
+        from intelligence.v5_dashboard import snapshot as v5_snapshot
+        db=connect(DB,True)
+        return jsonify(v5_snapshot(db,time.time(),selection))
+    except (sqlite3.Error,ValueError):return jsonify({'status':'V5 INITIALIZING','error':'V5 database unavailable'}),503
+    finally:
+        if db:db.close()
+
+@app.route('/api/v5/settings',methods=['GET','POST'])
+def v5_settings():
+    db=None
+    try:
+        from intelligence.storage import connect
+        from intelligence.v5_storage import settings
+        if request.method=='POST':
+            guard=_v3_write_guard()
+            if guard:return guard
+            values=request.get_json(silent=True)
+            if not isinstance(values,dict) or not values or any(k not in ('60','180','300','600','settlement','daily') or type(v) is not bool for k,v in values.items()):return jsonify({'error':'Use known checkpoint/category names and booleans'}),400
+            db=connect(DB)
+            with db:
+                for k,v in values.items():db.execute('INSERT OR REPLACE INTO v5_settings VALUES(?,?)',(k,'true' if v else 'false'))
+        else:db=connect(DB,True)
+        return jsonify({'settings':settings(db),'csrf':_alert_csrf})
+    except sqlite3.Error:return jsonify({'error':'V5 schema not ready'}),409
+    finally:
+        if db:db.close()
+
+@app.get('/api/v5/research')
+def v5_research():
+    db=None;selection=request.args.get('range','all')
+    if selection not in ('today','7','30','all'):return jsonify({'error':'Invalid range'}),400
+    try:
+        from intelligence.storage import connect
+        from intelligence.v5_evaluation import report
+        db=connect(DB,True)
+        return jsonify(report(db,selection,time.time()))
+    except (sqlite3.Error,ValueError):return jsonify({'error':'V5 research unavailable'}),409
+    finally:
+        if db:db.close()

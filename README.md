@@ -1,3 +1,7 @@
+# BTC Pro V5 · experimental independent paper forecasting
+
+Use [V5-WINDOWS.md](V5-WINDOWS.md) for the separate Windows installation and [V5-IMPLEMENTATION.md](V5-IMPLEMENTATION.md) for verified scope and explicit limitations. Start with **start-v5.cmd**, not an in-place overwrite. No demonstrated accuracy improvement or automatic trading.
+
 # BTC Pro V4 — separate research upgrade
 
 Read [V4 Windows launch and V3 fallback](V4-WINDOWS.md), [all V4 request areas and limits](V4-IMPLEMENTATION.md), and [verification record](V4-VERIFICATION.md). V3 remains the production baseline; V4 candidates are shadow-only. No auto trading or demonstrated75% accuracy/profitability.

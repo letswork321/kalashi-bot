@@ -1,7 +1,7 @@
-name: BTC Pro V4 Tests
+name: BTC Pro V5 Tests
 on:
   push:
-    branches: [btc-pro-v4-intelligence]
+    branches: [btc-pro-v4-intelligence, btc-pro-v5-accuracy-intelligence]
   workflow_dispatch:
 jobs:
   python-tests:
@@ -19,9 +19,9 @@ jobs:
       - name: Install pinned runtime requirements
         run: python -m pip install -r requirements.txt
       - name: Compile all application modules
-        run: python -m compileall -q intelligence scanner.py dashboard.py windows_setup.py windows_runner.py inplace_update.py
+        run: python -m compileall -q intelligence scanner.py dashboard.py windows_setup.py windows_runner.py inplace_update.py sqlite_runtime.py windows_v5.py
       - name: Check all JavaScript syntax
-        run: node --check static/scoreboard.js && node --check static/v4.js && node --check static/pro.js && node --check static/intelligence.js && node --check static/alerts.js
+        run: node --check static/v5.js && node --check static/scoreboard.js && node --check static/v4.js && node --check static/pro.js && node --check static/intelligence.js && node --check static/alerts.js
       - name: Run unit, migration and safety tests
         run: python .github/scripts/run_tests.py
       - name: Verify actual NuGet Python 3.12.10 bootstrap on Windows
