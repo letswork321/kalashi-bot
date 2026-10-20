@@ -6,8 +6,10 @@ from .storage import loads
 def observe(db,scheduler,now):
     with scheduler.lock:book=dict(scheduler.cache.get('book') or {})
     owner=getattr(scheduler,'owner',None);snapshot=getattr(owner,'latest_snapshot',None) or {}
-    for r in db.execute("SELECT ticker,checkpoint,observed,payload FROM v5_checkpoints WHERE state='FORECAST' ORDER BY scheduled DESC LIMIT 128"):
-        with db:db.execute('INSERT OR IGNORE INTO v5_paper(ticker,checkpoint,side,issued,entry_due,reason) VALUES(?,?,?,?,?,?)',(r['ticker'],r['checkpoint'],loads(r['payload'])['direction'],r['observed'],r['observed']+1,'Fixed one-second execution delay; full one-contract depth required, then official settlement'))
+    missing=db.execute("SELECT v.ticker,v.checkpoint,v.observed,v.payload FROM v5_checkpoints v LEFT JOIN v5_paper p ON p.ticker=v.ticker AND p.checkpoint=v.checkpoint WHERE v.state='FORECAST' AND p.ticker IS NULL ORDER BY v.scheduled DESC LIMIT 128").fetchall()
+    if missing:
+        with db:
+            for r in missing:db.execute('INSERT OR IGNORE INTO v5_paper(ticker,checkpoint,side,issued,entry_due,reason) VALUES(?,?,?,?,?,?)',(r['ticker'],r['checkpoint'],loads(r['payload'])['direction'],r['observed'],r['observed']+1,'Fixed one-second execution delay; full one-contract depth required, then official settlement'))
     for r in db.execute("SELECT * FROM v5_paper WHERE state='WAIT_ENTRY'").fetchall():
         if now<r['entry_due']:continue
         key=(r['ticker'],r['checkpoint'])

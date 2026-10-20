@@ -53,5 +53,6 @@ def summary(db,now,selection='all'):
     return out
 SCHEMA+='''
 CREATE TABLE IF NOT EXISTS v5_paper(ticker TEXT NOT NULL,checkpoint INTEGER NOT NULL,side TEXT NOT NULL,issued REAL NOT NULL,entry_due REAL NOT NULL,state TEXT NOT NULL DEFAULT 'WAIT_ENTRY',entry REAL,entry_fee REAL,observed REAL,book_ts REAL,multiplier REAL,pnl REAL,reason TEXT,PRIMARY KEY(ticker,checkpoint));
+CREATE INDEX IF NOT EXISTS v5_paper_issued ON v5_paper(issued);
 CREATE INDEX IF NOT EXISTS v5_paper_open ON v5_paper(state);
 '''

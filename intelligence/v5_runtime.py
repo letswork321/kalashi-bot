@@ -41,7 +41,7 @@ def message(db,ticker,c,pred,now):
             f"WAIT — forecast is not an entry recommendation. {pred['risk']}\n{pred['version']}{note}\nManual only. Changed opinions are scored only at official settlement.")
 
 class Runtime:
-    def __init__(self,scheduler):self.scheduler=scheduler;self.stop=threading.Event();self.threads=[];self.last_error={};self.last_attempt={}
+    def __init__(self,scheduler):self.scheduler=scheduler;self.stop=threading.Event();self.threads=[];self.last_error={};self.last_attempt={};self.scheduled=set();self.health_at=0
     def start(self):
         for fn,name in [(self.run,'v5-forecast-clock'),(self.deliver,'v5-telegram'),(self.research,'v5-model-research')]:
             t=threading.Thread(target=fn,name=name,daemon=True);t.start();self.threads.append(t)
@@ -75,7 +75,10 @@ class Runtime:
     def tick(self,db,now):
         with self.scheduler.lock:meta=dict(self.scheduler.cache.get('metadata') or {})
         # Register all known official markets, including ones discovered after a deadline.
-        for m in meta.get('markets',[]):schedule(db,{'ticker':m['ticker'],'opened':timestamp(m['open_time'])})
+        for m in meta.get('markets',[]):
+            if m['ticker'] not in self.scheduled:
+                schedule(db,{'ticker':m['ticker'],'opened':timestamp(m['open_time'])});self.scheduled.add(m['ticker'])
+        if len(self.scheduled)>512:self.scheduled={m['ticker'] for m in meta.get('markets',[])}
         due=db.execute("SELECT * FROM v5_checkpoints WHERE state='PENDING' AND scheduled<=? ORDER BY scheduled LIMIT 128",(now,)).fetchall()
         for r in due:
             key=(r['ticker'],r['checkpoint'])
@@ -114,7 +117,9 @@ class Runtime:
             self.last_error.pop(key,None)
         # Cap temporary diagnostics; persistent decisions stay in SQLite forever.
         if len(self.last_error)>256:self.last_error={k:self.last_error[k] for k in list(self.last_error)[-256:]}
-        with health_write(db) as health:health.execute("INSERT OR REPLACE INTO v5_health VALUES('clock',?,?)",(time.time(),dumps({'ok':True,'pending_due':len(due),'last_input_errors':list(self.last_error.values())[-4:]})))
+        if now-self.health_at>=1:
+            with health_write(db) as health:health.execute("INSERT OR REPLACE INTO v5_health VALUES('clock',?,?)",(time.time(),dumps({'ok':True,'pending_due':len(due),'last_input_errors':list(self.last_error.values())[-4:]})))
+            self.health_at=now
     @resilient
     def run(self):
         db=migrate(self.scheduler.path)
