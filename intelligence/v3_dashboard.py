@@ -21,10 +21,7 @@ def snapshot(db,now=None):
             if live['caller'].get('guidance') in ('ENTER','AVOID'):live['caller'].update(guidance='WAIT',entry='Executable stream quote is not current')
     benchmark=live.get('brti',{})
     if benchmark.get('event_ts') is not None and now-benchmark['event_ts']>3:benchmark['status']='STALE'
-    counts=dict(db.execute("""SELECT sum(state='LOCKED' AND result IN ('yes','no') AND ((direction='UP')=(result='yes'))) wins,
-       sum(state='LOCKED' AND result IN ('yes','no') AND ((direction='UP')!=(result='yes'))) losses,
-       sum(state='LOCKED' AND result IS NULL) pending,sum(state='MISSED') missed FROM intel_locks""").fetchone())
-    counts={k:int(v or 0) for k,v in counts.items()};n=counts['wins']+counts['losses'];counts['accuracy']=counts['wins']/n if n else None
+    counts=settlement_summary(db)
     live.update(now=now,status='LIVE' if fresh else 'WAIT / STALE',settlement_score=counts,caller_score=summary(db),settings=settings(db),watch_positions=[dict(r) for r in db.execute("SELECT * FROM v3_watch_positions WHERE state='WATCHING' ORDER BY id")])
     boost=db.execute('SELECT version,created,payload FROM v3_model_comparisons ORDER BY created DESC LIMIT 1').fetchone()
     if boost:
@@ -33,3 +30,12 @@ def snapshot(db,now=None):
     live['paper_profit']=[dict(r) for r in db.execute("SELECT kind,count(*) closed,sum(pnl) net FROM intel_sim WHERE state='CLOSED' GROUP BY kind")]
     live['module_performance']=[dict(r) for r in db.execute("SELECT e.module,e.regime,count(*) n,sum((e.direction='UP')=(m.result='yes')) correct FROM v3_module_events e JOIN intel_markets m USING(ticker) WHERE e.direction IS NOT NULL AND m.result IN ('yes','no') GROUP BY e.module,e.regime")]
     return live
+
+
+def settlement_summary(db):
+    """Lifetime immutable locks and official results, including imported V3 rows."""
+    counts=dict(db.execute("""SELECT sum(state='LOCKED' AND result IN ('yes','no') AND ((direction='UP')=(result='yes'))) wins,
+       sum(state='LOCKED' AND result IN ('yes','no') AND ((direction='UP')!=(result='yes'))) losses,
+       sum(state='LOCKED' AND result IS NULL) pending,sum(state='MISSED') missed FROM intel_locks""").fetchone())
+    counts={k:int(v or 0) for k,v in counts.items()};n=counts['wins']+counts['losses'];counts['accuracy']=counts['wins']/n if n else None
+    return counts

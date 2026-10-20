@@ -238,6 +238,19 @@ def v3_watch():
     finally:
         if db:db.close()
 
+@app.get('/api/v4/scoreboard')
+def v4_scoreboard():
+    db=None
+    try:
+        from intelligence.storage import connect
+        from intelligence.v3_dashboard import settlement_summary
+        if not DB.is_file():return jsonify({'error':'Database initializing'}),503
+        db=connect(DB,True)
+        return jsonify({'settlement_score':settlement_summary(db),'as_of':time.time(),'scope':'lifetime','source':'immutable locked forecasts; official settlement only'})
+    except sqlite3.Error:return jsonify({'error':'Lifetime results temporarily unavailable; retrying'}),503
+    finally:
+        if db:db.close()
+
 @app.get('/api/v4/state')
 def v4_state():
     db=None
